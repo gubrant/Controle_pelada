@@ -30,6 +30,8 @@ import { VotingView } from './components/VotingView.tsx';
 import { PaymentsView } from './components/PaymentsView.tsx';
 import { RosterAdminView } from './components/RosterAdminView.tsx';
 import { NotificationsDrawer } from './components/NotificationsDrawer.tsx';
+import { PWAInstallButton } from './components/PWAInstallButton.tsx';
+import { OfflineIndicator } from './components/OfflineIndicator.tsx';
 
 type ActiveTab = 'painel' | 'peladas' | 'votacao' | 'financeiro' | 'elenco';
 
@@ -285,29 +287,30 @@ export default function App() {
             <UserPlus className="h-3.5 w-3.5" />
             <span>Novo Peladeiro</span>
           </button>
+
+          <PWAInstallButton />
         </div>
       </aside>
 
       {/* Main Content */}
-      <div className="flex-1 flex flex-col min-w-0 lg:pl-64 pb-20 lg:pb-8">
+      <div className="flex-1 flex flex-col min-w-0 lg:pl-64 pb-24 lg:pb-8">
         {/* Top Bar (3 zones) */}
-        <header className="sticky top-0 z-30 flex items-center justify-between gap-4 sm:gap-8 border-b border-slate-200 bg-white/95 px-4 sm:px-8 py-3.5 backdrop-blur-md">
-          <div className="flex items-center gap-3 min-w-0">
-            <span className="lg:hidden font-display text-sm font-bold text-emerald-700 whitespace-nowrap shrink-0">
+        <header className="sticky top-0 z-30 flex items-center justify-between gap-2 sm:gap-6 border-b border-slate-200 bg-white/95 px-3.5 sm:px-8 py-3 backdrop-blur-md">
+          <div className="flex flex-col lg:flex-row lg:items-center lg:gap-3 min-w-0">
+            <span className="lg:hidden font-display text-[11px] font-bold text-emerald-700 truncate">
               {peladaNome}
             </span>
-            <span className="lg:hidden text-slate-300">/</span>
-            <h1 className="font-display text-base sm:text-lg font-bold text-slate-900 truncate">
+            <h1 className="font-display text-sm sm:text-lg font-bold text-slate-900 truncate">
               {tabTitles[activeTab]}
             </h1>
           </div>
 
-          <div className="flex items-center gap-2.5 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
             <select
               aria-label="Selecionar participante ativo"
               value={currentUser.id}
               onChange={(e) => handleSwitchPlayer(Number(e.target.value))}
-              className="lg:hidden min-h-[40px] max-w-[140px] rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-800 truncate"
+              className="lg:hidden min-h-[44px] max-w-[112px] rounded-xl border border-slate-200 bg-white px-2 py-1.5 text-xs font-semibold text-slate-800 truncate"
             >
               {players.map((p) => (
                 <option key={p.id} value={p.id}>
@@ -316,10 +319,14 @@ export default function App() {
               ))}
             </select>
 
+            <div className="lg:hidden">
+              <PWAInstallButton compact />
+            </div>
+
             <button
               type="button"
               onClick={() => setShowRegisterModal(true)}
-              className="lg:hidden min-h-[40px] min-w-[40px] inline-flex items-center justify-center rounded-xl border border-slate-200 text-emerald-700 hover:bg-emerald-50"
+              className="lg:hidden min-h-[44px] min-w-[44px] inline-flex items-center justify-center rounded-xl border border-slate-200 text-emerald-700 hover:bg-emerald-50"
               title="Novo Peladeiro"
             >
               <UserPlus className="h-4 w-4" />
@@ -329,7 +336,7 @@ export default function App() {
               type="button"
               onClick={() => setNotifOpen(true)}
               aria-label="Abrir notificações"
-              className="relative min-h-[40px] inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 whitespace-nowrap"
+              className="relative min-h-[44px] min-w-[44px] inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 whitespace-nowrap"
             >
               <Bell className="h-4 w-4 text-slate-700" />
               <span className="hidden sm:inline">Notificações</span>
@@ -402,7 +409,7 @@ export default function App() {
       {/* Fixed Mobile Bottom Tab Bar */}
       <nav
         aria-label="Navegação principal"
-        className="fixed bottom-0 left-0 right-0 z-40 grid grid-cols-5 border-t border-slate-200 bg-white/95 backdrop-blur-md lg:hidden h-16"
+        className="fixed bottom-0 left-0 right-0 z-40 grid grid-cols-5 border-t border-slate-200 bg-white/95 backdrop-blur-md lg:hidden min-h-[64px] pb-[env(safe-area-inset-bottom)]"
       >
         {NAV_ITEMS.map((item) => {
           const Icon = item.icon;
@@ -412,7 +419,7 @@ export default function App() {
               key={item.id}
               type="button"
               onClick={() => setActiveTab(item.id)}
-              className={`flex flex-col items-center justify-center gap-0.5 text-[10px] font-semibold transition-colors ${
+              className={`min-h-[48px] flex flex-col items-center justify-center gap-0.5 text-[10px] font-semibold transition-colors ${
                 isActive ? 'text-emerald-700' : 'text-slate-500'
               }`}
             >
@@ -566,6 +573,9 @@ export default function App() {
         onMarkAllRead={handleMarkAllNotifRead}
         onRespondAttendance={handleConfirmAttendance}
       />
+
+      {/* Offline status indicator */}
+      <OfflineIndicator />
 
       {/* Toast Feedback */}
       {toast && (

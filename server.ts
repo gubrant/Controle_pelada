@@ -366,6 +366,59 @@ async function startServer() {
     res.json({ player: getUserProfileById(targetId) });
   });
 
+  // Admin: adjust or reset player ratings
+  app.put('/api/admin/players/:id/ratings', requireAuth, requireAdmin, (req, res) => {
+    const targetId = Number(req.params.id);
+    if (!Number.isInteger(targetId)) {
+      res.status(400).json({ error: 'ID de jogador inválido.' });
+      return;
+    }
+
+    const target = getUserProfileById(targetId);
+    if (!target) {
+      res.status(404).json({ error: 'Jogador não encontrado.' });
+      return;
+    }
+
+    const { mode, preparo, drible, chute, passe, defesa, ataque } = req.body ?? {};
+    if (mode === 'automatico') {
+      db.prepare(
+        `UPDATE users SET
+          rating_override = 0,
+          override_preparo = NULL,
+          override_drible = NULL,
+          override_chute = NULL,
+          override_passe = NULL,
+          override_defesa = NULL,
+          override_ataque = NULL
+         WHERE id = ?`
+      ).run(targetId);
+      res.json({ player: getUserProfileById(targetId) });
+      return;
+    }
+
+    const p = clampScore(preparo, target.stats.criteria.preparo);
+    const d = clampScore(drible, target.stats.criteria.drible);
+    const c = clampScore(chute, target.stats.criteria.chute);
+    const pa = clampScore(passe, target.stats.criteria.passe);
+    const de = clampScore(defesa, target.stats.criteria.defesa);
+    const a = clampScore(ataque, target.stats.criteria.ataque);
+
+    db.prepare(
+      `UPDATE users SET
+        rating_override = 1,
+        override_preparo = ?,
+        override_drible = ?,
+        override_chute = ?,
+        override_passe = ?,
+        override_defesa = ?,
+        override_ataque = ?
+       WHERE id = ?`
+    ).run(p, d, c, pa, de, a, targetId);
+
+    res.json({ player: getUserProfileById(targetId) });
+  });
+
   // Admin: delete account
   app.delete('/api/admin/players/:id', requireAuth, requireAdmin, (req: AuthenticatedRequest, res) => {
     const targetId = Number(req.params.id);
@@ -696,12 +749,161 @@ async function startServer() {
     res.json({ encounter: encounters.find((e) => e.id === encId) });
   });
 
-  // Goals
-  app.post('/api/encounters/:id/goals', requireAuth, requireAdmin, (req: AuthenticatedRequest, res) => {
+  // Matches (Partidas dentro do encontro — qualquer participante pode preencher resultado durante a partida)
+  app.post('/api/encounters/:id/matches', requireAuth, (req: AuthenticatedRequest, res) => {
+    const encId = Number(req.params.id);
+    const teamAId = Number(req.body?.teamAId);
+    const teamBId = Number(req.body?.teamBId);
+    const goalsA = Math.max(0, Math.min(99, Math.round(Number(req.body?.goalsA) || 0)));
+    const goalsB = Math.max(0, Math.min(99, Math.round(Number(req.body?.goalsB) || 0)));
+    const status = req.body?.status === 'finalizado' ? 'finalizado' : 'em_andamento';
+
+    const enc = db.prepare('SELECT id, status FROM encounters WHERE id = ?').get(encId) as
+      | { id: number; status: EncounterStatus }
+      | undefined;
+    if (!enc) {
+      res.status(404).json({ error: 'Encontro não encontrado.' });
+      return;
+    }
+    if (enc.status === 'finalizado' && req.authUser!.role !== 'administrador') {
+      res.status(403).json({ error: 'Este encontro já foi finalizado.' });
+      return;
+    }
+
+    if (!Number.isInteger(teamAId) || !Number.isInteger(teamBId) || teamAId === teamBId) {
+      res.status(400).json({ error: 'Selecione dois times diferentes para a partida.' });
+      return;
+    }
+
+    const teamsInEnc = db
+      .prepare('SELECT id FROM teams WHERE encounter_id = ? AND id IN (?, ?)')
+      .all(encId, teamAId, teamBId) as Array<{ id: number }>;
+    if (teamsInEnc.length !== 2) {
+      res.status(400).json({ error: 'Times inválidos para este encontro.' });
+      return;
+    }
+
+    const winnerTeamId =
+      status === 'finalizado'
+        ? goalsA > goalsB
+          ? teamAId
+          : goalsB > goalsA
+          ? teamBId
+          : null
+        : null;
+
+    db.prepare(
+      `INSERT INTO matches (encounter_id, team_a_id, team_b_id, goals_a, goals_b, status, winner_team_id, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(encId, teamAId, teamBId, goalsA, goalsB, status, winnerTeamId, req.authUser!.id);
+
+    const encounters = getEncounterSummaries(req.authUser!.id);
+    res.status(201).json({ encounter: encounters.find((e) => e.id === encId) });
+  });
+
+  app.patch('/api/encounters/:id/matches/:matchId', requireAuth, (req: AuthenticatedRequest, res) => {
+    const encId = Number(req.params.id);
+    const matchId = Number(req.params.matchId);
+
+    const enc = db.prepare('SELECT id, status FROM encounters WHERE id = ?').get(encId) as
+      | { id: number; status: EncounterStatus }
+      | undefined;
+    if (!enc) {
+      res.status(404).json({ error: 'Encontro não encontrado.' });
+      return;
+    }
+    if (enc.status === 'finalizado' && req.authUser!.role !== 'administrador') {
+      res.status(403).json({ error: 'Este encontro já foi finalizado.' });
+      return;
+    }
+
+    const match = db
+      .prepare('SELECT * FROM matches WHERE id = ? AND encounter_id = ?')
+      .get(matchId, encId) as
+      | {
+          id: number;
+          team_a_id: number;
+          team_b_id: number;
+          goals_a: number;
+          goals_b: number;
+          status: 'em_andamento' | 'finalizado';
+        }
+      | undefined;
+    if (!match) {
+      res.status(404).json({ error: 'Partida não encontrada.' });
+      return;
+    }
+
+    const nextGoalsA =
+      req.body?.goalsA !== undefined && Number.isFinite(Number(req.body.goalsA))
+        ? Math.max(0, Math.min(99, Math.round(Number(req.body.goalsA))))
+        : match.goals_a;
+    const nextGoalsB =
+      req.body?.goalsB !== undefined && Number.isFinite(Number(req.body.goalsB))
+        ? Math.max(0, Math.min(99, Math.round(Number(req.body.goalsB))))
+        : match.goals_b;
+    const nextStatus =
+      req.body?.status === 'finalizado' || req.body?.status === 'em_andamento'
+        ? req.body.status
+        : match.status;
+
+    const winnerTeamId =
+      nextStatus === 'finalizado'
+        ? nextGoalsA > nextGoalsB
+          ? match.team_a_id
+          : nextGoalsB > nextGoalsA
+          ? match.team_b_id
+          : null
+        : null;
+
+    db.prepare(
+      `UPDATE matches
+       SET goals_a = ?, goals_b = ?, status = ?, winner_team_id = ?
+       WHERE id = ? AND encounter_id = ?`
+    ).run(nextGoalsA, nextGoalsB, nextStatus, winnerTeamId, matchId, encId);
+
+    const encounters = getEncounterSummaries(req.authUser!.id);
+    res.json({ encounter: encounters.find((e) => e.id === encId) });
+  });
+
+  app.delete('/api/encounters/:id/matches/:matchId', requireAuth, (req: AuthenticatedRequest, res) => {
+    const encId = Number(req.params.id);
+    const matchId = Number(req.params.matchId);
+    const enc = db.prepare('SELECT id, status FROM encounters WHERE id = ?').get(encId) as
+      | { id: number; status: EncounterStatus }
+      | undefined;
+    if (!enc) {
+      res.status(404).json({ error: 'Encontro não encontrado.' });
+      return;
+    }
+    if (enc.status === 'finalizado' && req.authUser!.role !== 'administrador') {
+      res.status(403).json({ error: 'Apenas administradores podem excluir partidas após finalizar o encontro.' });
+      return;
+    }
+    db.prepare('DELETE FROM matches WHERE id = ? AND encounter_id = ?').run(matchId, encId);
+    const encounters = getEncounterSummaries(req.authUser!.id);
+    res.json({ encounter: encounters.find((e) => e.id === encId) });
+  });
+
+  // Goals (qualquer usuário pode registrar gol e assistência durante a partida)
+  app.post('/api/encounters/:id/goals', requireAuth, (req: AuthenticatedRequest, res) => {
     const encId = Number(req.params.id);
     const scorerId = Number(req.body?.scorerId);
     const assistId = req.body?.assistId ? Number(req.body.assistId) : null;
+    const matchId = req.body?.matchId ? Number(req.body.matchId) : null;
     const minuto = sanitizeOptionalNumber(req.body?.minuto, 1, 120);
+
+    const enc = db.prepare('SELECT id, status FROM encounters WHERE id = ?').get(encId) as
+      | { id: number; status: EncounterStatus }
+      | undefined;
+    if (!enc) {
+      res.status(404).json({ error: 'Encontro não encontrado.' });
+      return;
+    }
+    if (enc.status === 'finalizado' && req.authUser!.role !== 'administrador') {
+      res.status(403).json({ error: 'Este encontro já foi finalizado.' });
+      return;
+    }
 
     if (!Number.isInteger(scorerId)) {
       res.status(400).json({ error: 'Selecione o autor do gol.' });
@@ -716,19 +918,111 @@ async function startServer() {
       teamId = tp?.team_id ?? null;
     }
 
-    db.prepare(
-      `INSERT INTO goals (encounter_id, team_id, scorer_id, assist_id, minuto)
-       VALUES (?, ?, ?, ?, ?)`
-    ).run(encId, teamId, scorerId, assistId && assistId !== scorerId ? assistId : null, minuto);
+    db.transaction(() => {
+      db.prepare(
+        `INSERT INTO goals (encounter_id, match_id, team_id, scorer_id, assist_id, minuto)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      ).run(
+        encId,
+        matchId && Number.isInteger(matchId) ? matchId : null,
+        teamId,
+        scorerId,
+        assistId && assistId !== scorerId ? assistId : null,
+        minuto
+      );
+
+      if (matchId && Number.isInteger(matchId) && teamId) {
+        const match = db
+          .prepare('SELECT * FROM matches WHERE id = ? AND encounter_id = ?')
+          .get(matchId, encId) as
+          | {
+              id: number;
+              team_a_id: number;
+              team_b_id: number;
+              goals_a: number;
+              goals_b: number;
+              status: 'em_andamento' | 'finalizado';
+            }
+          | undefined;
+        if (match) {
+          const nextGoalsA = teamId === match.team_a_id ? match.goals_a + 1 : match.goals_a;
+          const nextGoalsB = teamId === match.team_b_id ? match.goals_b + 1 : match.goals_b;
+          const winnerTeamId =
+            match.status === 'finalizado'
+              ? nextGoalsA > nextGoalsB
+                ? match.team_a_id
+                : nextGoalsB > nextGoalsA
+                ? match.team_b_id
+                : null
+              : null;
+          db.prepare(
+            'UPDATE matches SET goals_a = ?, goals_b = ?, winner_team_id = ? WHERE id = ?'
+          ).run(nextGoalsA, nextGoalsB, winnerTeamId, matchId);
+        }
+      }
+    })();
 
     const encounters = getEncounterSummaries(req.authUser!.id);
     res.status(201).json({ encounter: encounters.find((e) => e.id === encId) });
   });
 
-  app.delete('/api/encounters/:id/goals/:goalId', requireAuth, requireAdmin, (req: AuthenticatedRequest, res) => {
+  app.delete('/api/encounters/:id/goals/:goalId', requireAuth, (req: AuthenticatedRequest, res) => {
     const encId = Number(req.params.id);
     const goalId = Number(req.params.goalId);
-    db.prepare('DELETE FROM goals WHERE id = ? AND encounter_id = ?').run(goalId, encId);
+
+    const enc = db.prepare('SELECT id, status FROM encounters WHERE id = ?').get(encId) as
+      | { id: number; status: EncounterStatus }
+      | undefined;
+    if (!enc) {
+      res.status(404).json({ error: 'Encontro não encontrado.' });
+      return;
+    }
+    if (enc.status === 'finalizado' && req.authUser!.role !== 'administrador') {
+      res.status(403).json({ error: 'Apenas administradores podem remover gols após finalizar o encontro.' });
+      return;
+    }
+
+    db.transaction(() => {
+      const goal = db
+        .prepare('SELECT id, match_id, team_id FROM goals WHERE id = ? AND encounter_id = ?')
+        .get(goalId, encId) as { id: number; match_id: number | null; team_id: number | null } | undefined;
+
+      if (goal) {
+        db.prepare('DELETE FROM goals WHERE id = ? AND encounter_id = ?').run(goalId, encId);
+        if (goal.match_id && goal.team_id) {
+          const match = db
+            .prepare('SELECT * FROM matches WHERE id = ? AND encounter_id = ?')
+            .get(goal.match_id, encId) as
+            | {
+                id: number;
+                team_a_id: number;
+                team_b_id: number;
+                goals_a: number;
+                goals_b: number;
+                status: 'em_andamento' | 'finalizado';
+              }
+            | undefined;
+          if (match) {
+            const nextGoalsA =
+              goal.team_id === match.team_a_id ? Math.max(0, match.goals_a - 1) : match.goals_a;
+            const nextGoalsB =
+              goal.team_id === match.team_b_id ? Math.max(0, match.goals_b - 1) : match.goals_b;
+            const winnerTeamId =
+              match.status === 'finalizado'
+                ? nextGoalsA > nextGoalsB
+                  ? match.team_a_id
+                  : nextGoalsB > nextGoalsA
+                  ? match.team_b_id
+                  : null
+                : null;
+            db.prepare(
+              'UPDATE matches SET goals_a = ?, goals_b = ?, winner_team_id = ? WHERE id = ?'
+            ).run(nextGoalsA, nextGoalsB, winnerTeamId, match.id);
+          }
+        }
+      }
+    })();
+
     const encounters = getEncounterSummaries(req.authUser!.id);
     res.json({ encounter: encounters.find((e) => e.id === encId) });
   });

@@ -6,6 +6,8 @@ import type {
   DashboardData,
   EncounterSummary,
   GoalRecord,
+  MatchRecord,
+  MatchStatus,
   MonthlyPaymentItem,
   NotificationItem,
   PeladaSettings,
@@ -38,6 +40,13 @@ db.exec(`
     init_passe REAL NOT NULL DEFAULT 6.0,
     init_defesa REAL NOT NULL DEFAULT 6.0,
     init_ataque REAL NOT NULL DEFAULT 6.0,
+    rating_override INTEGER NOT NULL DEFAULT 0,
+    override_preparo REAL,
+    override_drible REAL,
+    override_chute REAL,
+    override_passe REAL,
+    override_defesa REAL,
+    override_ataque REAL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
@@ -85,9 +94,23 @@ db.exec(`
     UNIQUE(encounter_id, user_id)
   );
 
+  CREATE TABLE IF NOT EXISTS matches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    encounter_id INTEGER NOT NULL REFERENCES encounters(id) ON DELETE CASCADE,
+    team_a_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    team_b_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    goals_a INTEGER NOT NULL DEFAULT 0,
+    goals_b INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL CHECK(status IN ('em_andamento', 'finalizado')) DEFAULT 'em_andamento',
+    winner_team_id INTEGER REFERENCES teams(id) ON DELETE SET NULL,
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
   CREATE TABLE IF NOT EXISTS goals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     encounter_id INTEGER NOT NULL REFERENCES encounters(id) ON DELETE CASCADE,
+    match_id INTEGER REFERENCES matches(id) ON DELETE CASCADE,
     team_id INTEGER REFERENCES teams(id) ON DELETE SET NULL,
     scorer_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     assist_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -133,6 +156,31 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 `);
+
+const userCols = (db.prepare('PRAGMA table_info(users)').all() as Array<{ name: string }>).map(
+  (c) => c.name
+);
+const extraUserCols: Array<[string, string]> = [
+  ['rating_override', 'INTEGER NOT NULL DEFAULT 0'],
+  ['override_preparo', 'REAL'],
+  ['override_drible', 'REAL'],
+  ['override_chute', 'REAL'],
+  ['override_passe', 'REAL'],
+  ['override_defesa', 'REAL'],
+  ['override_ataque', 'REAL'],
+];
+for (const [col, def] of extraUserCols) {
+  if (!userCols.includes(col)) {
+    db.exec(`ALTER TABLE users ADD COLUMN ${col} ${def}`);
+  }
+}
+
+const goalCols = (db.prepare('PRAGMA table_info(goals)').all() as Array<{ name: string }>).map(
+  (c) => c.name
+);
+if (!goalCols.includes('match_id')) {
+  db.exec('ALTER TABLE goals ADD COLUMN match_id INTEGER REFERENCES matches(id) ON DELETE CASCADE');
+}
 
 const defaultSettings: Record<string, string> = {
   pelada_nome: 'Pelada Quadra Livre',
@@ -224,6 +272,13 @@ interface RawUserRow {
   init_passe: number;
   init_defesa: number;
   init_ataque: number;
+  rating_override: number;
+  override_preparo: number | null;
+  override_drible: number | null;
+  override_chute: number | null;
+  override_passe: number | null;
+  override_defesa: number | null;
+  override_ataque: number | null;
   created_at: string;
 }
 
@@ -284,7 +339,7 @@ function mapUserToProfile(row: RawUserRow): UserProfile {
   const hasPeerVotes = evaluatedEncountersCount > 0;
   const voteCount = recentEncounterVotes.reduce((sum, r) => sum + r.vote_count, 0);
 
-  const criteria: PlayerCriteria = hasPeerVotes
+  const autoCriteria: PlayerCriteria = hasPeerVotes
     ? {
         preparo: round1(
           recentEncounterVotes.reduce((sum, r) => sum + r.preparo, 0) / evaluatedEncountersCount
@@ -314,7 +369,7 @@ function mapUserToProfile(row: RawUserRow): UserProfile {
         ataque: round1(row.init_ataque),
       };
 
-  const overall = hasPeerVotes
+  const autoOverall = hasPeerVotes
     ? round1(
         recentEncounterVotes.reduce(
           (sum, r) => sum + (r.preparo + r.drible + r.chute + r.passe + r.defesa + r.ataque) / 6,
@@ -322,6 +377,29 @@ function mapUserToProfile(row: RawUserRow): UserProfile {
         ) / evaluatedEncountersCount
       )
     : round1(
+        (autoCriteria.preparo +
+          autoCriteria.drible +
+          autoCriteria.chute +
+          autoCriteria.passe +
+          autoCriteria.defesa +
+          autoCriteria.ataque) /
+          6
+      );
+
+  const isAdminAdjusted = row.rating_override === 1;
+  const criteria: PlayerCriteria = isAdminAdjusted
+    ? {
+        preparo: round1(row.override_preparo ?? autoCriteria.preparo),
+        drible: round1(row.override_drible ?? autoCriteria.drible),
+        chute: round1(row.override_chute ?? autoCriteria.chute),
+        passe: round1(row.override_passe ?? autoCriteria.passe),
+        defesa: round1(row.override_defesa ?? autoCriteria.defesa),
+        ataque: round1(row.override_ataque ?? autoCriteria.ataque),
+      }
+    : autoCriteria;
+
+  const overall = isAdminAdjusted
+    ? round1(
         (criteria.preparo +
           criteria.drible +
           criteria.chute +
@@ -329,7 +407,8 @@ function mapUserToProfile(row: RawUserRow): UserProfile {
           criteria.defesa +
           criteria.ataque) /
           6
-      );
+      )
+    : autoOverall;
 
   return {
     id: row.id,
@@ -354,6 +433,8 @@ function mapUserToProfile(row: RawUserRow): UserProfile {
       voteCount,
       evaluatedEncountersCount,
       hasPeerVotes,
+      isAdminAdjusted,
+      autoOverall,
       overall,
       criteria,
     },
@@ -449,6 +530,53 @@ export function getEncounterSummaries(currentUserId: number): EncounterSummary[]
       ordem: number;
     }>;
 
+    const matchRows = db
+      .prepare(
+        `SELECT m.*,
+                ta.nome as team_a_nome, ta.cor as team_a_cor,
+                tb.nome as team_b_nome, tb.cor as team_b_cor,
+                tw.nome as winner_team_nome
+         FROM matches m
+         JOIN teams ta ON ta.id = m.team_a_id
+         JOIN teams tb ON tb.id = m.team_b_id
+         LEFT JOIN teams tw ON tw.id = m.winner_team_id
+         WHERE m.encounter_id = ?
+         ORDER BY m.id DESC`
+      )
+      .all(enc.id) as Array<{
+      id: number;
+      encounter_id: number;
+      team_a_id: number;
+      team_a_nome: string;
+      team_a_cor: 'emerald' | 'slate' | 'amber' | 'sky';
+      team_b_id: number;
+      team_b_nome: string;
+      team_b_cor: 'emerald' | 'slate' | 'amber' | 'sky';
+      goals_a: number;
+      goals_b: number;
+      status: MatchStatus;
+      winner_team_id: number | null;
+      winner_team_nome: string | null;
+      created_at: string;
+    }>;
+
+    const matches: MatchRecord[] = matchRows.map((m) => ({
+      id: m.id,
+      encounterId: m.encounter_id,
+      teamAId: m.team_a_id,
+      teamANome: m.team_a_nome,
+      teamACor: m.team_a_cor,
+      teamBId: m.team_b_id,
+      teamBNome: m.team_b_nome,
+      teamBCor: m.team_b_cor,
+      goalsA: m.goals_a,
+      goalsB: m.goals_b,
+      status: m.status,
+      winnerTeamId: m.winner_team_id,
+      winnerTeamNome: m.winner_team_nome,
+      createdAt: m.created_at,
+    }));
+
     const teams: TeamDraw[] = teamRows.map((t) => {
       const tpRows = db
         .prepare(
@@ -478,6 +606,25 @@ export function getEncounterSummaries(currentUserId: number): EncounterSummary[]
         };
       });
 
+      let wins = 0;
+      let draws = 0;
+      let losses = 0;
+      let goalsFor = 0;
+      let goalsAgainst = 0;
+
+      for (const m of matches) {
+        if (m.teamAId !== t.id && m.teamBId !== t.id) continue;
+        const gf = m.teamAId === t.id ? m.goalsA : m.goalsB;
+        const ga = m.teamAId === t.id ? m.goalsB : m.goalsA;
+        goalsFor += gf;
+        goalsAgainst += ga;
+        if (m.status === 'finalizado') {
+          if (m.winnerTeamId === t.id) wins += 1;
+          else if (m.winnerTeamId === null) draws += 1;
+          else losses += 1;
+        }
+      }
+
       const count = players.length || 1;
       return {
         id: t.id,
@@ -489,6 +636,11 @@ export function getEncounterSummaries(currentUserId: number): EncounterSummary[]
         avgOverall: round1(players.reduce((s, p) => s + p.overall, 0) / count),
         avgAtaque: round1(players.reduce((s, p) => s + p.ataque, 0) / count),
         avgDefesa: round1(players.reduce((s, p) => s + p.defesa, 0) / count),
+        wins,
+        draws,
+        losses,
+        goalsFor,
+        goalsAgainst,
       };
     });
 
@@ -505,6 +657,7 @@ export function getEncounterSummaries(currentUserId: number): EncounterSummary[]
       .all(enc.id) as Array<{
       id: number;
       encounter_id: number;
+      match_id: number | null;
       team_id: number | null;
       team_nome: string | null;
       scorer_id: number;
@@ -518,6 +671,7 @@ export function getEncounterSummaries(currentUserId: number): EncounterSummary[]
     const goals: GoalRecord[] = goalRows.map((g) => ({
       id: g.id,
       encounterId: g.encounter_id,
+      matchId: g.match_id ?? null,
       teamId: g.team_id,
       teamNome: g.team_nome,
       scorerId: g.scorer_id,
@@ -544,6 +698,7 @@ export function getEncounterSummaries(currentUserId: number): EncounterSummary[]
       totalGoals: goals.length,
       attendance,
       teams,
+      matches,
       goals,
     };
   });
@@ -640,6 +795,11 @@ export function getDashboardData(): DashboardData {
   ).cnt;
   const encontrosFinalizados = (
     db.prepare("SELECT COUNT(*) as cnt FROM encounters WHERE status = 'finalizado'").get() as {
+      cnt: number;
+    }
+  ).cnt;
+  const totalPartidas = (
+    db.prepare("SELECT COUNT(*) as cnt FROM matches WHERE status = 'finalizado'").get() as {
       cnt: number;
     }
   ).cnt;
@@ -771,10 +931,41 @@ export function getDashboardData(): DashboardData {
     ataque: round1(profiles.reduce((s, p) => s + p.stats.criteria.ataque, 0) / countPlayers),
   };
 
+  const winRows = db
+    .prepare(
+      `SELECT tp.user_id,
+              COUNT(CASE WHEN m.winner_team_id = tp.team_id THEN 1 END) as vitorias,
+              COUNT(*) as partidas
+       FROM matches m
+       JOIN team_players tp
+         ON tp.encounter_id = m.encounter_id
+        AND (tp.team_id = m.team_a_id OR tp.team_id = m.team_b_id)
+       WHERE m.status = 'finalizado'
+       GROUP BY tp.user_id`
+    )
+    .all() as Array<{ user_id: number; vitorias: number; partidas: number }>;
+  const winMap = new Map(winRows.map((r) => [r.user_id, r]));
+
+  const topWinners = profiles
+    .map((p) => {
+      const w = winMap.get(p.id);
+      return {
+        userId: p.id,
+        displayName: p.displayName,
+        role: p.role,
+        vitorias: w?.vitorias ?? 0,
+        partidas: w?.partidas ?? 0,
+      };
+    })
+    .filter((w) => w.partidas > 0)
+    .sort((a, b) => b.vitorias - a.vitorias || a.partidas - b.partidas)
+    .slice(0, 10);
+
   return {
     kpis: {
       totalEncontros,
       encontrosFinalizados,
+      totalPartidas,
       totalGols,
       mediaGolsPorEncontro: totalEncontros > 0 ? round1(totalGols / totalEncontros) : 0,
       jogadoresAtivos: profiles.length,
@@ -786,6 +977,7 @@ export function getDashboardData(): DashboardData {
           : 0,
     },
     topScorers,
+    topWinners,
     topRated,
     attendanceRanking,
     monthlyRevenue,

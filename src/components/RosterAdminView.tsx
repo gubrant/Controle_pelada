@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { Eye, Search, Trash2, UserCog, UserPlus, X } from 'lucide-react';
+import { Eye, Minus, Plus, RotateCcw, Search, SlidersHorizontal, Trash2, UserCog, UserPlus, X } from 'lucide-react';
 import type { PlayerCriteria, UserProfile, UserRole } from '../types.ts';
 import { CRITERIA_LABELS, ROLE_LABELS, api } from '../lib/api.ts';
 import { RadarChart } from './RadarChart.tsx';
@@ -59,6 +59,11 @@ export function RosterAdminView({
   );
   const [profCriteria, setProfCriteria] = useState<PlayerCriteria>(currentUser.initialCriteria);
   const [savingProfile, setSavingProfile] = useState(false);
+
+  // Admin rating adjustment modal
+  const [ratingTarget, setRatingTarget] = useState<UserProfile | null>(null);
+  const [ratingDraft, setRatingDraft] = useState<PlayerCriteria>(DEFAULT_CRITERIA);
+  const [savingRatings, setSavingRatings] = useState(false);
 
   const filtered = players.filter((p) => {
     const matchesRole = roleFilter === 'all' || p.role === roleFilter;
@@ -151,23 +156,74 @@ export function RosterAdminView({
     setShowProfileModal(true);
   };
 
+  const openRatingModal = (player: UserProfile) => {
+    setRatingTarget(player);
+    setRatingDraft({ ...player.stats.criteria });
+  };
+
+  const handleSaveAdminRatings = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!ratingTarget) return;
+    setSavingRatings(true);
+    try {
+      const res = await api.adminUpdateRatings(ratingTarget.id, {
+        mode: 'manual',
+        ...ratingDraft,
+      });
+      if (res.player.id === currentUser.id) {
+        onUpdateCurrentUser(res.player);
+      }
+      if (detailPlayer?.id === res.player.id) {
+        setDetailPlayer(res.player);
+      }
+      setRatingTarget(null);
+      await onRefresh();
+      onToast(`Notas de ${res.player.displayName} ajustadas com sucesso!`);
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : 'Erro ao ajustar notas.', 'error');
+    } finally {
+      setSavingRatings(false);
+    }
+  };
+
+  const handleResetAdminRatings = async () => {
+    if (!ratingTarget) return;
+    setSavingRatings(true);
+    try {
+      const res = await api.adminUpdateRatings(ratingTarget.id, { mode: 'automatico' });
+      if (res.player.id === currentUser.id) {
+        onUpdateCurrentUser(res.player);
+      }
+      if (detailPlayer?.id === res.player.id) {
+        setDetailPlayer(res.player);
+      }
+      setRatingTarget(null);
+      await onRefresh();
+      onToast(`Notas de ${res.player.displayName} restauradas para a média automática.`);
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : 'Erro ao restaurar notas.', 'error');
+    } finally {
+      setSavingRatings(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Barra de filtros e ações */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-wrap items-center gap-2">
-          <div className="relative">
+          <div className="relative w-full sm:w-auto">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
             <input
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Buscar jogador..."
-              className="min-h-[42px] w-56 rounded-xl border border-slate-300 bg-white pl-9 pr-3 text-xs text-slate-900 focus:border-emerald-600 focus:outline-none"
+              className="min-h-[44px] w-full sm:w-56 rounded-xl border border-slate-300 bg-white pl-9 pr-3 text-xs text-slate-900 focus:border-emerald-600 focus:outline-none"
             />
           </div>
 
-          <div className="flex items-center gap-1 rounded-xl bg-slate-200/70 p-1">
+          <div className="flex items-center gap-1 rounded-xl bg-slate-200/70 p-1 overflow-x-auto max-w-full">
             {(
               [
                 ['all', 'Todos'],
@@ -180,7 +236,7 @@ export function RosterAdminView({
                 key={val}
                 type="button"
                 onClick={() => setRoleFilter(val)}
-                className={`min-h-[34px] rounded-lg px-3 py-1 text-xs font-semibold whitespace-nowrap transition-colors ${
+                className={`min-h-[36px] rounded-lg px-3 py-1 text-xs font-semibold whitespace-nowrap transition-colors ${
                   roleFilter === val
                     ? 'bg-white text-slate-900 shadow-xs'
                     : 'text-slate-600 hover:text-slate-900'
@@ -215,8 +271,98 @@ export function RosterAdminView({
         </div>
       </div>
 
-      {/* Tabela do elenco */}
-      <section className="rounded-2xl border border-slate-200 bg-white overflow-hidden">
+      {/* Lista mobile do elenco */}
+      <section className="space-y-3 md:hidden">
+        {filtered.map((p) => (
+          <div
+            key={p.id}
+            className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className="font-semibold text-slate-900 truncate">
+                  {p.displayName}
+                  {p.id === currentUser.id && (
+                    <span className="ml-1.5 text-xs font-normal text-emerald-700">(você)</span>
+                  )}
+                </p>
+                <p className="text-xs font-mono text-slate-500">
+                  @{p.username} · {p.stats.totalGoals}G · {p.stats.totalPresences}J
+                </p>
+              </div>
+              <div className="text-right shrink-0">
+                <span className="font-mono text-base font-bold text-emerald-700 tabular-nums">
+                  {p.stats.overall.toFixed(1)}
+                </span>
+                <p className="text-[11px] text-slate-400">
+                  {p.stats.isAdminAdjusted ? 'Admin' : p.stats.hasPeerVotes ? 'Média 5J' : 'Inicial'}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100">
+              {isAdmin ? (
+                <select
+                  aria-label={`Função de ${p.displayName}`}
+                  value={p.role}
+                  onChange={(e) => handleRoleChange(p.id, e.target.value as UserRole)}
+                  className="min-h-[40px] rounded-xl border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-800"
+                >
+                  <option value="administrador">Administrador</option>
+                  <option value="peladeiro">Peladeiro Fixo</option>
+                  <option value="peladeiro_avulso">Peladeiro Avulso</option>
+                </select>
+              ) : (
+                <span className="text-xs font-medium text-slate-600">{ROLE_LABELS[p.role]}</span>
+              )}
+
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setDetailPlayer(p)}
+                  className="min-h-[40px] inline-flex items-center gap-1 rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                >
+                  <Eye className="h-3.5 w-3.5" />
+                  <span>Ficha</span>
+                </button>
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => openRatingModal(p)}
+                    className="min-h-[40px] inline-flex items-center gap-1 rounded-xl border border-emerald-200 bg-emerald-50/70 px-3 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-100"
+                  >
+                    <SlidersHorizontal className="h-3.5 w-3.5" />
+                    <span>Notas</span>
+                  </button>
+                )}
+                {isAdmin && p.id !== currentUser.id && (
+                  confirmDeleteId === p.id ? (
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteUser(p.id)}
+                      className="min-h-[40px] rounded-xl bg-red-600 px-3 py-1.5 text-xs font-semibold text-white"
+                    >
+                      Confirmar
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDeleteId(p.id)}
+                      title="Excluir conta"
+                      className="min-h-[40px] min-w-[40px] inline-flex items-center justify-center rounded-xl border border-slate-200 text-slate-500 hover:bg-red-50 hover:text-red-600"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  )
+                )}
+              </div>
+            </div>
+          </div>
+        ))}
+      </section>
+
+      {/* Tabela do elenco (Desktop/Tablet) */}
+      <section className="hidden md:block rounded-2xl border border-slate-200 bg-white overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
             <thead className="bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600">
@@ -251,7 +397,9 @@ export function RosterAdminView({
                       {p.stats.overall.toFixed(1)}
                     </span>
                     <p className="text-[11px] text-slate-400 tabular-nums">
-                      {p.stats.hasPeerVotes
+                      {p.stats.isAdminAdjusted
+                        ? 'Ajustada (Admin)'
+                        : p.stats.hasPeerVotes
                         ? `Últ. ${p.stats.evaluatedEncountersCount} jogo(s)`
                         : 'Inicial'}
                     </p>
@@ -290,6 +438,17 @@ export function RosterAdminView({
                         <Eye className="h-3.5 w-3.5" />
                         <span>Ficha</span>
                       </button>
+
+                      {isAdmin && (
+                        <button
+                          type="button"
+                          onClick={() => openRatingModal(p)}
+                          className="min-h-[34px] inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50/70 px-2.5 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-100"
+                        >
+                          <SlidersHorizontal className="h-3.5 w-3.5" />
+                          <span>Notas</span>
+                        </button>
+                      )}
 
                       {isAdmin && p.id !== currentUser.id && (
                         confirmDeleteId === p.id ? (
@@ -385,6 +544,23 @@ export function RosterAdminView({
                 </div>
               ))}
             </div>
+
+            {isAdmin && (
+              <div className="mt-5 pt-4 border-t border-slate-100 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const target = detailPlayer;
+                    setDetailPlayer(null);
+                    openRatingModal(target);
+                  }}
+                  className="min-h-[40px] inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-700"
+                >
+                  <SlidersHorizontal className="h-3.5 w-3.5" />
+                  <span>Ajustar Notas deste Jogador</span>
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -646,6 +822,163 @@ export function RosterAdminView({
                 >
                   {savingProfile ? 'Salvando...' : 'Salvar Alterações'}
                 </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Ajustar Notas (Admin) */}
+      {ratingTarget && isAdmin && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-xs overflow-y-auto">
+          <div className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-6 shadow-xl my-8">
+            <div className="flex items-start justify-between mb-4">
+              <div>
+                <h3 className="font-display text-lg font-bold text-slate-900">
+                  Ajustar Notas — {ratingTarget.displayName}
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5 tabular-nums">
+                  {ratingTarget.stats.hasPeerVotes
+                    ? `Média automática dos últimos ${ratingTarget.stats.evaluatedEncountersCount} jogo(s): ${ratingTarget.stats.autoOverall.toFixed(1)}`
+                    : `Autoavaliação inicial: ${ratingTarget.stats.autoOverall.toFixed(1)}`}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRatingTarget(null)}
+                className="min-h-[36px] min-w-[36px] inline-flex items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveAdminRatings} className="space-y-4">
+              <div className="flex items-center justify-between rounded-xl bg-slate-50 px-4 py-3 border border-slate-200">
+                <span className="text-xs font-medium text-slate-600">
+                  Nova Média Geral (OVR)
+                </span>
+                <span className="font-mono text-2xl font-bold text-emerald-700 tabular-nums">
+                  {(
+                    (ratingDraft.preparo +
+                      ratingDraft.drible +
+                      ratingDraft.chute +
+                      ratingDraft.passe +
+                      ratingDraft.defesa +
+                      ratingDraft.ataque) /
+                    6
+                  ).toFixed(1)}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-5 gap-y-3">
+                {CRITERIA_LABELS.map((c) => (
+                  <div key={c.key} className="space-y-1">
+                    <div className="flex items-center justify-between text-xs">
+                      <label htmlFor={`adj-${c.key}`} className="font-medium text-slate-700">
+                        {c.label}
+                      </label>
+                      <span className="font-mono font-bold text-emerald-700 tabular-nums">
+                        {ratingDraft[c.key].toFixed(1)}
+                      </span>
+                    </div>
+                    {c.key === 'preparo' ? (
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          aria-label="Diminuir Preparo Físico"
+                          onClick={() =>
+                            setRatingDraft((prev) => ({
+                              ...prev,
+                              preparo: Math.max(1, Math.round((prev.preparo - 0.5) * 10) / 10),
+                            }))
+                          }
+                          disabled={ratingDraft.preparo <= 1}
+                          className="min-h-[40px] min-w-[40px] inline-flex items-center justify-center rounded-xl border border-slate-300 bg-slate-50 text-slate-700 hover:bg-emerald-50 hover:border-emerald-400 disabled:opacity-40 shrink-0 transition-colors"
+                        >
+                          <Minus className="h-4 w-4" />
+                        </button>
+                        <input
+                          id={`adj-${c.key}`}
+                          type="range"
+                          min={1}
+                          max={10}
+                          step={0.5}
+                          value={ratingDraft[c.key]}
+                          onChange={(e) =>
+                            setRatingDraft((prev) => ({
+                              ...prev,
+                              [c.key]: Number(e.target.value),
+                            }))
+                          }
+                          className="w-full accent-emerald-600 cursor-pointer"
+                        />
+                        <button
+                          type="button"
+                          aria-label="Aumentar Preparo Físico"
+                          onClick={() =>
+                            setRatingDraft((prev) => ({
+                              ...prev,
+                              preparo: Math.min(10, Math.round((prev.preparo + 0.5) * 10) / 10),
+                            }))
+                          }
+                          disabled={ratingDraft.preparo >= 10}
+                          className="min-h-[40px] min-w-[40px] inline-flex items-center justify-center rounded-xl border border-slate-300 bg-slate-50 text-slate-700 hover:bg-emerald-50 hover:border-emerald-400 disabled:opacity-40 shrink-0 transition-colors"
+                        >
+                          <Plus className="h-4 w-4" />
+                        </button>
+                      </div>
+                    ) : (
+                      <input
+                        id={`adj-${c.key}`}
+                        type="range"
+                        min={1}
+                        max={10}
+                        step={0.5}
+                        value={ratingDraft[c.key]}
+                        onChange={(e) =>
+                          setRatingDraft((prev) => ({
+                            ...prev,
+                            [c.key]: Number(e.target.value),
+                          }))
+                        }
+                        className="w-full accent-emerald-600 cursor-pointer"
+                      />
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-slate-100">
+                {ratingTarget.stats.isAdminAdjusted ? (
+                  <button
+                    type="button"
+                    disabled={savingRatings}
+                    onClick={handleResetAdminRatings}
+                    className="min-h-[42px] inline-flex items-center gap-1.5 rounded-xl border border-slate-300 px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    <span>Restaurar Média Automática</span>
+                  </button>
+                ) : (
+                  <span />
+                )}
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setRatingTarget(null)}
+                    className="min-h-[42px] rounded-xl border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={savingRatings}
+                    className="min-h-[42px] rounded-xl bg-emerald-600 px-5 py-2 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                  >
+                    {savingRatings ? 'Salvando...' : 'Salvar Notas'}
+                  </button>
+                </div>
               </div>
             </form>
           </div>

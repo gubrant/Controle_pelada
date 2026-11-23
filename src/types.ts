@@ -20,6 +20,8 @@ export interface PlayerStats {
   voteCount: number;
   evaluatedEncountersCount: number;
   hasPeerVotes: boolean;
+  isAdminAdjusted: boolean;
+  autoOverall: number;
   overall: number;
   criteria: PlayerCriteria;
 }
@@ -61,6 +63,8 @@ export interface TeamPlayerItem {
   defesa: number;
 }
 
+export type MatchStatus = 'em_andamento' | 'finalizado';
+
 export interface TeamDraw {
   id: number;
   encounterId: number;
@@ -71,11 +75,17 @@ export interface TeamDraw {
   avgOverall: number;
   avgAtaque: number;
   avgDefesa: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  goalsFor: number;
+  goalsAgainst: number;
 }
 
 export interface GoalRecord {
   id: number;
   encounterId: number;
+  matchId: number | null;
   teamId: number | null;
   teamNome: string | null;
   scorerId: number;
@@ -83,6 +93,23 @@ export interface GoalRecord {
   assistId: number | null;
   assistName: string | null;
   minuto: number | null;
+  createdAt: string;
+}
+
+export interface MatchRecord {
+  id: number;
+  encounterId: number;
+  teamAId: number;
+  teamANome: string;
+  teamACor: 'emerald' | 'slate' | 'amber' | 'sky';
+  teamBId: number;
+  teamBNome: string;
+  teamBCor: 'emerald' | 'slate' | 'amber' | 'sky';
+  goalsA: number;
+  goalsB: number;
+  status: MatchStatus;
+  winnerTeamId: number | null;
+  winnerTeamNome: string | null;
   createdAt: string;
 }
 
@@ -102,6 +129,7 @@ export interface EncounterSummary {
   totalGoals: number;
   attendance: AttendanceRecord[];
   teams: TeamDraw[];
+  matches: MatchRecord[];
   goals: GoalRecord[];
 }
 
@@ -166,6 +194,7 @@ export interface DashboardData {
   kpis: {
     totalEncontros: number;
     encontrosFinalizados: number;
+    totalPartidas: number;
     totalGols: number;
     mediaGolsPorEncontro: number;
     jogadoresAtivos: number;
@@ -182,6 +211,13 @@ export interface DashboardData {
     assistencias: number;
     presencas: number;
     mediaGols: number;
+  }>;
+  topWinners: Array<{
+    userId: number;
+    displayName: string;
+    role: UserRole;
+    vitorias: number;
+    partidas: number;
   }>;
   topRated: UserProfile[];
   attendanceRanking: Array<{

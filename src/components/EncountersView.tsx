@@ -2,9 +2,13 @@ import { useEffect, useState, type FormEvent } from 'react';
 import {
   BellRing,
   Check,
+  Minus,
+  Play,
   Plus,
+  RotateCcw,
   Shuffle,
   Trash2,
+  Trophy,
   Users,
   X,
   Goal,
@@ -15,6 +19,7 @@ import type {
   AttendanceStatus,
   EncounterStatus,
   EncounterSummary,
+  MatchRecord,
   UserProfile,
 } from '../types.ts';
 import {
@@ -70,7 +75,15 @@ export function EncountersView({
   const [drawMode, setDrawMode] = useState<'equilibrado' | 'aleatorio'>('equilibrado');
   const [drawing, setDrawing] = useState(false);
 
+  // Match controls
+  const [newTeamAId, setNewTeamAId] = useState<string>('');
+  const [newTeamBId, setNewTeamBId] = useState<string>('');
+  const [creatingMatch, setCreatingMatch] = useState(false);
+  const [updatingMatchId, setUpdatingMatchId] = useState<number | null>(null);
+
   // Goal form
+  const [selectedMatchId, setSelectedMatchId] = useState<string>('');
+  const [goalTeamId, setGoalTeamId] = useState<string>('');
   const [scorerId, setScorerId] = useState<string>('');
   const [assistId, setAssistId] = useState<string>('');
   const [minuto, setMinuto] = useState<string>('');
@@ -87,6 +100,31 @@ export function EncountersView({
   }, [encounters, selectedId]);
 
   const active = encounters.find((e) => e.id === selectedId) ?? encounters[0] ?? null;
+
+  useEffect(() => {
+    if (!active) return;
+    if (active.teams.length >= 2) {
+      if (!active.teams.some((t) => String(t.id) === newTeamAId)) {
+        setNewTeamAId(String(active.teams[0].id));
+      }
+      if (!active.teams.some((t) => String(t.id) === newTeamBId) || newTeamBId === newTeamAId) {
+        const second = active.teams.find((t) => String(t.id) !== newTeamAId) ?? active.teams[1];
+        setNewTeamBId(String(second.id));
+      }
+    } else {
+      setNewTeamAId('');
+      setNewTeamBId('');
+    }
+
+    const liveMatch = active.matches.find((m) => m.status === 'em_andamento');
+    if (liveMatch && (!selectedMatchId || !active.matches.some((m) => String(m.id) === selectedMatchId))) {
+      setSelectedMatchId(String(liveMatch.id));
+    } else if (selectedMatchId && !active.matches.some((m) => String(m.id) === selectedMatchId)) {
+      setSelectedMatchId('');
+    }
+  }, [active?.id, active?.teams.length, active?.matches.length]);
+
+  const canEditMatchData = Boolean(active && (active.status !== 'finalizado' || isAdmin));
 
   const handleCreateEncounter = async (e: FormEvent) => {
     e.preventDefault();
@@ -165,6 +203,92 @@ export function EncountersView({
     }
   };
 
+  const handleCreateMatch = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!active || !newTeamAId || !newTeamBId) return;
+    if (newTeamAId === newTeamBId) {
+      onToast('Selecione dois times diferentes para a partida.', 'error');
+      return;
+    }
+    setCreatingMatch(true);
+    try {
+      const res = await api.createMatch(active.id, {
+        teamAId: Number(newTeamAId),
+        teamBId: Number(newTeamBId),
+      });
+      const created = res.encounter?.matches[0];
+      if (created) {
+        setSelectedMatchId(String(created.id));
+      }
+      await onRefresh();
+      onToast('Partida iniciada! Preencha o placar, gols e assistências.');
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : 'Erro ao iniciar partida.', 'error');
+    } finally {
+      setCreatingMatch(false);
+    }
+  };
+
+  const handleUpdateMatchScore = async (
+    match: MatchRecord,
+    nextGoalsA: number,
+    nextGoalsB: number
+  ) => {
+    if (!active) return;
+    setUpdatingMatchId(match.id);
+    try {
+      await api.updateMatch(active.id, match.id, {
+        goalsA: Math.max(0, nextGoalsA),
+        goalsB: Math.max(0, nextGoalsB),
+      });
+      await onRefresh();
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : 'Erro ao atualizar placar.', 'error');
+    } finally {
+      setUpdatingMatchId(null);
+    }
+  };
+
+  const handleToggleMatchStatus = async (
+    match: MatchRecord,
+    nextStatus: 'em_andamento' | 'finalizado'
+  ) => {
+    if (!active) return;
+    setUpdatingMatchId(match.id);
+    try {
+      await api.updateMatch(active.id, match.id, { status: nextStatus });
+      await onRefresh();
+      onToast(
+        nextStatus === 'finalizado'
+          ? match.goalsA === match.goalsB
+            ? 'Partida finalizada com empate!'
+            : 'Partida finalizada e vitória contabilizada para o time!'
+          : 'Partida reaberta para ajustes.'
+      );
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : 'Erro ao atualizar partida.', 'error');
+    } finally {
+      setUpdatingMatchId(null);
+    }
+  };
+
+  const handleDeleteMatch = async (matchId: number) => {
+    if (!active) return;
+    setUpdatingMatchId(matchId);
+    try {
+      await api.deleteMatch(active.id, matchId);
+      if (String(matchId) === selectedMatchId) {
+        setSelectedMatchId('');
+      }
+      await onRefresh();
+      onToast('Partida removida.');
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : 'Erro ao remover partida.', 'error');
+    } finally {
+      setUpdatingMatchId(null);
+    }
+  };
+
   const handleAddGoal = async (e: FormEvent) => {
     e.preventDefault();
     if (!active || !scorerId) return;
@@ -173,12 +297,14 @@ export function EncountersView({
       await api.addGoal(active.id, {
         scorerId: Number(scorerId),
         assistId: assistId ? Number(assistId) : null,
+        teamId: goalTeamId ? Number(goalTeamId) : null,
+        matchId: selectedMatchId ? Number(selectedMatchId) : null,
         minuto: minuto ? Number(minuto) : null,
       });
       setMinuto('');
       setAssistId('');
       await onRefresh();
-      onToast('Gol registrado!');
+      onToast('Gol e assistência registrados!');
     } catch (err) {
       onToast(err instanceof Error ? err.message : 'Erro ao registrar gol.', 'error');
     } finally {
@@ -225,18 +351,29 @@ export function EncountersView({
   };
 
   const confirmedPlayers = active?.attendance.filter((a) => a.status === 'confirmado') ?? [];
+  const selectedMatch = active?.matches.find((m) => String(m.id) === selectedMatchId) ?? null;
+
+  const sortedTeamsStandings = active
+    ? [...active.teams].sort(
+        (a, b) =>
+          b.wins - a.wins ||
+          b.goalsFor - b.goalsAgainst - (a.goalsFor - a.goalsAgainst) ||
+          b.goalsFor - a.goalsFor ||
+          a.ordem - b.ordem
+      )
+    : [];
 
   return (
     <div className="space-y-6">
       {/* Barra superior dos encontros */}
-      <div className="flex flex-wrap items-center justify-between gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2 overflow-x-auto pb-1 max-w-full">
           {encounters.map((enc) => (
             <button
               key={enc.id}
               type="button"
               onClick={() => setSelectedId(enc.id)}
-              className={`min-h-[40px] rounded-xl px-4 py-2 text-xs font-semibold whitespace-nowrap border transition-colors ${
+              className={`min-h-[42px] rounded-xl px-4 py-2 text-xs font-semibold whitespace-nowrap border transition-colors ${
                 active?.id === enc.id
                   ? 'border-emerald-600 bg-emerald-600 text-white'
                   : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
@@ -284,7 +421,7 @@ export function EncountersView({
       ) : (
         <>
           {/* Cabeçalho do encontro ativo */}
-          <section className="rounded-2xl border border-slate-200 bg-white p-6">
+          <section className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-6">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
               <div className="space-y-1.5">
                 <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-slate-500">
@@ -299,7 +436,9 @@ export function EncountersView({
                   <span aria-hidden="true">·</span>
                   <span className="tabular-nums">Avulso: {formatCurrency(active.valorAvulso)}</span>
                 </div>
-                <h2 className="font-display text-2xl font-bold text-slate-900">{active.titulo}</h2>
+                <h2 className="font-display text-xl sm:text-2xl font-bold text-slate-900">
+                  {active.titulo}
+                </h2>
                 <p className="text-sm text-slate-600 tabular-nums">
                   {formatDateTime(active.dataHora)}
                 </p>
@@ -311,7 +450,7 @@ export function EncountersView({
                     <button
                       type="button"
                       onClick={() => handleSetAttendance('confirmado')}
-                      className={`min-h-[42px] inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold whitespace-nowrap transition-colors ${
+                      className={`min-h-[44px] inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold whitespace-nowrap transition-colors ${
                         active.myAttendance === 'confirmado'
                           ? 'bg-emerald-600 text-white'
                           : 'border border-emerald-600 text-emerald-700 hover:bg-emerald-50'
@@ -325,7 +464,7 @@ export function EncountersView({
                     <button
                       type="button"
                       onClick={() => handleSetAttendance('recusado')}
-                      className={`min-h-[42px] inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold whitespace-nowrap border transition-colors ${
+                      className={`min-h-[44px] inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold whitespace-nowrap border transition-colors ${
                         active.myAttendance === 'recusado'
                           ? 'border-red-600 bg-red-600 text-white'
                           : 'border-slate-300 text-slate-700 hover:bg-slate-50'
@@ -338,12 +477,12 @@ export function EncountersView({
                 )}
 
                 {isAdmin && (
-                  <div className="flex flex-wrap items-center gap-2 border-l border-slate-200 pl-2.5">
+                  <div className="flex flex-wrap items-center gap-2 sm:border-l sm:border-slate-200 sm:pl-2.5">
                     <select
                       aria-label="Status do encontro"
                       value={active.status}
                       onChange={(e) => handleChangeStatus(e.target.value as EncounterStatus)}
-                      className="min-h-[42px] rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 focus:border-emerald-600 focus:outline-none"
+                      className="min-h-[44px] rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 focus:border-emerald-600 focus:outline-none"
                     >
                       <option value="aberto">Aberto</option>
                       <option value="em_andamento">Em Andamento</option>
@@ -355,7 +494,7 @@ export function EncountersView({
                         type="button"
                         onClick={() => setConfirmDeleteEnc(true)}
                         title="Excluir encontro"
-                        className="min-h-[42px] min-w-[42px] inline-flex items-center justify-center rounded-xl border border-slate-200 text-slate-500 hover:border-red-200 hover:bg-red-50 hover:text-red-600 transition-colors"
+                        className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center rounded-xl border border-slate-200 text-slate-500 hover:border-red-200 hover:bg-red-50 hover:text-red-600 transition-colors"
                       >
                         <Trash2 className="h-4 w-4" />
                       </button>
@@ -363,7 +502,7 @@ export function EncountersView({
                       <button
                         type="button"
                         onClick={handleDeleteEncounter}
-                        className="min-h-[42px] rounded-xl bg-red-600 px-3 py-2 text-xs font-semibold text-white hover:bg-red-700 whitespace-nowrap"
+                        className="min-h-[44px] rounded-xl bg-red-600 px-3 py-2 text-xs font-semibold text-white hover:bg-red-700 whitespace-nowrap"
                       >
                         Confirmar Exclusão
                       </button>
@@ -376,7 +515,7 @@ export function EncountersView({
 
           <div className="grid gap-6 lg:grid-cols-12">
             {/* Lista de Presença */}
-            <section className="lg:col-span-5 rounded-2xl border border-slate-200 bg-white p-6">
+            <section className="lg:col-span-5 rounded-2xl border border-slate-200 bg-white p-5 sm:p-6">
               <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
                 <div>
                   <h3 className="font-display text-lg font-bold text-slate-900">
@@ -391,7 +530,7 @@ export function EncountersView({
                   <button
                     type="button"
                     onClick={handleRemind}
-                    className="min-h-[38px] inline-flex items-center gap-1.5 rounded-xl border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 whitespace-nowrap"
+                    className="min-h-[40px] inline-flex items-center gap-1.5 rounded-xl border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 whitespace-nowrap"
                   >
                     <BellRing className="h-3.5 w-3.5 text-amber-600" />
                     <span>Notificar Pendentes</span>
@@ -424,7 +563,7 @@ export function EncountersView({
                         onChange={(e) =>
                           handleSetAttendance(e.target.value as AttendanceStatus, att.userId)
                         }
-                        className={`rounded-lg border px-2.5 py-1.5 text-xs font-semibold focus:outline-none ${
+                        className={`min-h-[38px] rounded-lg border px-2.5 py-1.5 text-xs font-semibold focus:outline-none ${
                           att.status === 'confirmado'
                             ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
                             : att.status === 'recusado'
@@ -458,10 +597,10 @@ export function EncountersView({
               </div>
             </section>
 
-            {/* Sorteio de Times & Controle de Gols */}
+            {/* Sorteio de Times, Partidas ao Vivo e Gols */}
             <div className="lg:col-span-7 space-y-6">
               {/* Sorteio */}
-              <section className="rounded-2xl border border-slate-200 bg-white p-6">
+              <section className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-6">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-4">
                   <div>
                     <h3 className="font-display text-lg font-bold text-slate-900">
@@ -479,7 +618,7 @@ export function EncountersView({
                         aria-label="Quantidade de times"
                         value={numTeams}
                         onChange={(e) => setNumTeams(Number(e.target.value))}
-                        className="min-h-[40px] rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800"
+                        className="min-h-[42px] rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800"
                       >
                         <option value={2}>2 Times</option>
                         <option value={3}>3 Times</option>
@@ -491,7 +630,7 @@ export function EncountersView({
                         onChange={(e) =>
                           setDrawMode(e.target.value as 'equilibrado' | 'aleatorio')
                         }
-                        className="min-h-[40px] rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800"
+                        className="min-h-[42px] rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800"
                       >
                         <option value="equilibrado">Equilibrado (Nota)</option>
                         <option value="aleatorio">Aleatório</option>
@@ -500,7 +639,7 @@ export function EncountersView({
                         type="button"
                         disabled={drawing || confirmedPlayers.length < 2}
                         onClick={handleDrawTeams}
-                        className="min-h-[40px] inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50 whitespace-nowrap transition-colors"
+                        className="min-h-[42px] inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50 whitespace-nowrap transition-colors"
                       >
                         <Shuffle className="h-3.5 w-3.5" />
                         <span>{drawing ? 'Sorteando...' : 'Sortear Times'}</span>
@@ -525,9 +664,9 @@ export function EncountersView({
                             TEAM_STYLES[team.cor] || 'border-slate-200 bg-slate-50'
                           }`}
                         >
-                          <div className="flex items-center justify-between mb-3">
-                            <div>
-                              <h4 className="font-display text-sm font-bold text-slate-900">
+                          <div className="flex items-center justify-between mb-3 gap-2">
+                            <div className="min-w-0">
+                              <h4 className="font-display text-sm font-bold text-slate-900 truncate">
                                 {team.nome}
                               </h4>
                               <p className="text-[11px] text-slate-600 tabular-nums">
@@ -535,9 +674,14 @@ export function EncountersView({
                                 Def {team.avgDefesa.toFixed(1)}
                               </p>
                             </div>
-                            <span className="font-mono text-xl font-bold text-slate-900 tabular-nums">
-                              {teamGoals}
-                            </span>
+                            <div className="text-right shrink-0">
+                              <span className="font-mono text-lg font-bold text-emerald-700 tabular-nums">
+                                {team.wins}V
+                              </span>
+                              <p className="text-[11px] text-slate-500 font-mono tabular-nums">
+                                {Math.max(team.goalsFor, teamGoals)} gols
+                              </p>
+                            </div>
                           </div>
 
                           <ul className="space-y-1.5">
@@ -580,12 +724,291 @@ export function EncountersView({
                 )}
               </section>
 
-              {/* Controle de Gols */}
-              <section className="rounded-2xl border border-slate-200 bg-white p-6">
+              {/* Partidas em Quadra, Placar & Vitórias dos Times */}
+              {active.teams.length >= 2 && (
+                <section className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-6 space-y-5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h3 className="font-display text-lg font-bold text-slate-900">
+                        Partidas & Vitórias dos Times
+                      </h3>
+                      <p className="text-xs text-slate-500">
+                        Qualquer participante pode preencher o placar durante a partida e encerrar para contabilizar vitórias.
+                      </p>
+                    </div>
+                    <Trophy className="h-5 w-5 text-amber-600 shrink-0" />
+                  </div>
+
+                  {/* Tabela de Vitórias dos Times */}
+                  <div className="overflow-x-auto rounded-xl border border-slate-200">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-slate-50 border-b border-slate-200 font-semibold text-slate-600">
+                        <tr>
+                          <th className="px-3.5 py-2.5">Time</th>
+                          <th className="px-2.5 py-2.5 text-center" title="Vitórias">V</th>
+                          <th className="px-2.5 py-2.5 text-center" title="Empates">E</th>
+                          <th className="px-2.5 py-2.5 text-center" title="Derrotas">D</th>
+                          <th className="px-2.5 py-2.5 text-center" title="Gols Pró">GP</th>
+                          <th className="px-2.5 py-2.5 text-center" title="Gols Contra">GC</th>
+                          <th className="px-3 py-2.5 text-right" title="Saldo de Gols">SG</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {sortedTeamsStandings.map((t) => {
+                          const sg = t.goalsFor - t.goalsAgainst;
+                          return (
+                            <tr key={t.id} className="hover:bg-slate-50/70">
+                              <td className="px-3.5 py-2.5 font-semibold text-slate-900">
+                                {t.nome}
+                              </td>
+                              <td className="px-2.5 py-2.5 text-center font-mono font-bold text-emerald-700 tabular-nums">
+                                {t.wins}
+                              </td>
+                              <td className="px-2.5 py-2.5 text-center font-mono text-slate-600 tabular-nums">
+                                {t.draws}
+                              </td>
+                              <td className="px-2.5 py-2.5 text-center font-mono text-slate-600 tabular-nums">
+                                {t.losses}
+                              </td>
+                              <td className="px-2.5 py-2.5 text-center font-mono text-slate-700 tabular-nums">
+                                {t.goalsFor}
+                              </td>
+                              <td className="px-2.5 py-2.5 text-center font-mono text-slate-700 tabular-nums">
+                                {t.goalsAgainst}
+                              </td>
+                              <td className="px-3 py-2.5 text-right font-mono font-semibold text-slate-800 tabular-nums">
+                                {sg > 0 ? `+${sg}` : sg}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Iniciar nova partida */}
+                  {canEditMatchData && (
+                    <form
+                      onSubmit={handleCreateMatch}
+                      className="grid gap-2.5 sm:grid-cols-12 items-end rounded-xl bg-slate-50 p-3.5 border border-slate-200"
+                    >
+                      <div className="sm:col-span-4">
+                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                          Time Mandante
+                        </label>
+                        <select
+                          value={newTeamAId}
+                          onChange={(e) => setNewTeamAId(e.target.value)}
+                          className="w-full min-h-[42px] rounded-xl border border-slate-300 bg-white px-2.5 py-2 text-xs font-semibold text-slate-900"
+                        >
+                          {active.teams.map((t) => (
+                            <option key={t.id} value={t.id}>
+                              {t.nome}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="sm:col-span-4">
+                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                          Time Visitante
+                        </label>
+                        <select
+                          value={newTeamBId}
+                          onChange={(e) => setNewTeamBId(e.target.value)}
+                          className="w-full min-h-[42px] rounded-xl border border-slate-300 bg-white px-2.5 py-2 text-xs font-semibold text-slate-900"
+                        >
+                          {active.teams.map((t) => (
+                            <option key={t.id} value={t.id}>
+                              {t.nome}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="sm:col-span-4">
+                        <button
+                          type="submit"
+                          disabled={creatingMatch || newTeamAId === newTeamBId}
+                          className="w-full min-h-[42px] inline-flex items-center justify-center gap-1.5 rounded-xl bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50 whitespace-nowrap"
+                        >
+                          <Play className="h-3.5 w-3.5" />
+                          <span>{creatingMatch ? 'Iniciando...' : 'Iniciar Partida'}</span>
+                        </button>
+                      </div>
+                    </form>
+                  )}
+
+                  {/* Lista de Partidas */}
+                  {active.matches.length === 0 ? (
+                    <p className="py-4 text-center text-xs text-slate-500">
+                      Nenhuma partida iniciada ainda. Clique em "Iniciar Partida" para registrar o placar e contabilizar vitórias.
+                    </p>
+                  ) : (
+                    <div className="space-y-3">
+                      {active.matches.map((match, idx) => {
+                        const isBusy = updatingMatchId === match.id;
+                        const matchNumber = active.matches.length - idx;
+                        const isLive = match.status === 'em_andamento';
+                        return (
+                          <div
+                            key={match.id}
+                            className={`rounded-xl border p-4 space-y-3 transition-colors ${
+                              isLive
+                                ? 'border-emerald-300 bg-emerald-50/35'
+                                : 'border-slate-200 bg-slate-50/60'
+                            }`}
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                              <div className="flex items-center gap-2 font-semibold">
+                                <span className="font-mono text-slate-500">#{matchNumber}</span>
+                                <span
+                                  className={
+                                    isLive ? 'text-emerald-700' : 'text-slate-700'
+                                  }
+                                >
+                                  {isLive
+                                    ? 'Partida em andamento'
+                                    : match.winnerTeamNome
+                                    ? `Vitória: ${match.winnerTeamNome}`
+                                    : 'Finalizada · Empate'}
+                                </span>
+                              </div>
+                              {canEditMatchData && (
+                                <button
+                                  type="button"
+                                  disabled={isBusy}
+                                  onClick={() => handleDeleteMatch(match.id)}
+                                  title="Excluir partida"
+                                  className="min-h-[34px] min-w-[34px] inline-flex items-center justify-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              )}
+                            </div>
+
+                            {/* Placar com controles touch + / - */}
+                            <div className="grid grid-cols-1 sm:grid-cols-11 items-center gap-3">
+                              <div className="sm:col-span-4 flex items-center justify-between sm:justify-end gap-2">
+                                <span className="text-xs sm:text-sm font-bold text-slate-900 truncate">
+                                  {match.teamANome.split(' — ')[0]}
+                                </span>
+                                {canEditMatchData && (
+                                  <div className="flex items-center gap-1 shrink-0">
+                                    <button
+                                      type="button"
+                                      disabled={isBusy || match.goalsA <= 0}
+                                      onClick={() =>
+                                        handleUpdateMatchScore(match, match.goalsA - 1, match.goalsB)
+                                      }
+                                      aria-label={`Diminuir placar ${match.teamANome}`}
+                                      className="min-h-[42px] min-w-[42px] inline-flex items-center justify-center rounded-xl border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 disabled:opacity-40"
+                                    >
+                                      <Minus className="h-4 w-4" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={isBusy}
+                                      onClick={() =>
+                                        handleUpdateMatchScore(match, match.goalsA + 1, match.goalsB)
+                                      }
+                                      aria-label={`Aumentar placar ${match.teamANome}`}
+                                      className="min-h-[42px] min-w-[42px] inline-flex items-center justify-center rounded-xl border border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
+                                    >
+                                      <Plus className="h-4 w-4" />
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+
+                              <div className="sm:col-span-3 flex items-center justify-center gap-2 font-mono text-2xl font-bold text-slate-900 tabular-nums">
+                                <span>{match.goalsA}</span>
+                                <span className="text-sm font-normal text-slate-400">×</span>
+                                <span>{match.goalsB}</span>
+                              </div>
+
+                              <div className="sm:col-span-4 flex items-center justify-between sm:justify-start gap-2">
+                                {canEditMatchData && (
+                                  <div className="flex items-center gap-1 shrink-0 order-2 sm:order-1">
+                                    <button
+                                      type="button"
+                                      disabled={isBusy || match.goalsB <= 0}
+                                      onClick={() =>
+                                        handleUpdateMatchScore(match, match.goalsA, match.goalsB - 1)
+                                      }
+                                      aria-label={`Diminuir placar ${match.teamBNome}`}
+                                      className="min-h-[42px] min-w-[42px] inline-flex items-center justify-center rounded-xl border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 disabled:opacity-40"
+                                    >
+                                      <Minus className="h-4 w-4" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={isBusy}
+                                      onClick={() =>
+                                        handleUpdateMatchScore(match, match.goalsA, match.goalsB + 1)
+                                      }
+                                      aria-label={`Aumentar placar ${match.teamBNome}`}
+                                      className="min-h-[42px] min-w-[42px] inline-flex items-center justify-center rounded-xl border border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
+                                    >
+                                      <Plus className="h-4 w-4" />
+                                    </button>
+                                  </div>
+                                )}
+                                <span className="text-xs sm:text-sm font-bold text-slate-900 truncate order-1 sm:order-2">
+                                  {match.teamBNome.split(' — ')[0]}
+                                </span>
+                              </div>
+                            </div>
+
+                            {canEditMatchData && (
+                              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200/70">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSelectedMatchId(String(match.id));
+                                    setGoalTeamId(String(match.teamAId));
+                                  }}
+                                  className="min-h-[38px] inline-flex items-center gap-1.5 rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                                >
+                                  <Goal className="h-3.5 w-3.5 text-emerald-600" />
+                                  <span>Lançar Gol / Assistência</span>
+                                </button>
+
+                                {isLive ? (
+                                  <button
+                                    type="button"
+                                    disabled={isBusy}
+                                    onClick={() => handleToggleMatchStatus(match, 'finalizado')}
+                                    className="min-h-[38px] inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
+                                  >
+                                    <Check className="h-3.5 w-3.5" />
+                                    <span>Encerrar e Contabilizar Vitória</span>
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    disabled={isBusy}
+                                    onClick={() => handleToggleMatchStatus(match, 'em_andamento')}
+                                    className="min-h-[38px] inline-flex items-center gap-1.5 rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+                                  >
+                                    <RotateCcw className="h-3.5 w-3.5" />
+                                    <span>Reabrir Placar</span>
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </section>
+              )}
+
+              {/* Controle de Gols e Assistências */}
+              <section className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-6">
                 <div className="flex items-center justify-between mb-4">
                   <div>
                     <h3 className="font-display text-lg font-bold text-slate-900">
-                      Controle de Gols
+                      Gols e Assistências da Partida
                     </h3>
                     <p className="text-xs text-slate-500 tabular-nums">
                       Total no encontro: {active.totalGoals} gols registrados
@@ -594,20 +1017,68 @@ export function EncountersView({
                   <Goal className="h-5 w-5 text-emerald-600" />
                 </div>
 
-                {isAdmin && confirmedPlayers.length > 0 && (
+                {canEditMatchData && confirmedPlayers.length > 0 && (
                   <form
                     onSubmit={handleAddGoal}
                     className="mb-5 grid gap-3 sm:grid-cols-12 items-end rounded-xl bg-slate-50 p-3.5 border border-slate-200"
                   >
+                    {active.matches.length > 0 && (
+                      <>
+                        <div className="sm:col-span-6">
+                          <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                            Vincular à Partida
+                          </label>
+                          <select
+                            value={selectedMatchId}
+                            onChange={(e) => {
+                              setSelectedMatchId(e.target.value);
+                              setGoalTeamId('');
+                            }}
+                            className="w-full min-h-[42px] rounded-xl border border-slate-300 bg-white px-2.5 py-2 text-xs text-slate-900"
+                          >
+                            <option value="">Sem partida específica (Geral)</option>
+                            {active.matches.map((m, i) => (
+                              <option key={m.id} value={m.id}>
+                                #{active.matches.length - i}: {m.teamANome.split(' — ')[0]} {m.goalsA}×{m.goalsB} {m.teamBNome.split(' — ')[0]}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div className="sm:col-span-6">
+                          <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                            Time que marcou
+                          </label>
+                          <select
+                            value={goalTeamId}
+                            onChange={(e) => setGoalTeamId(e.target.value)}
+                            className="w-full min-h-[42px] rounded-xl border border-slate-300 bg-white px-2.5 py-2 text-xs text-slate-900"
+                          >
+                            <option value="">Automático (Time do jogador)</option>
+                            {(selectedMatch
+                              ? active.teams.filter(
+                                  (t) => t.id === selectedMatch.teamAId || t.id === selectedMatch.teamBId
+                                )
+                              : active.teams
+                            ).map((t) => (
+                              <option key={t.id} value={t.id}>
+                                {t.nome}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </>
+                    )}
+
                     <div className="sm:col-span-5">
                       <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                        Autor do Gol
+                        Quem marcou o gol
                       </label>
                       <select
                         required
                         value={scorerId}
                         onChange={(e) => setScorerId(e.target.value)}
-                        className="w-full min-h-[40px] rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs text-slate-900"
+                        className="w-full min-h-[42px] rounded-xl border border-slate-300 bg-white px-2.5 py-2 text-xs text-slate-900"
                       >
                         <option value="">Selecione o jogador...</option>
                         {confirmedPlayers.map((p) => (
@@ -619,12 +1090,12 @@ export function EncountersView({
                     </div>
                     <div className="sm:col-span-4">
                       <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                        Assistência (opcional)
+                        Quem deu assistência
                       </label>
                       <select
                         value={assistId}
                         onChange={(e) => setAssistId(e.target.value)}
-                        className="w-full min-h-[40px] rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs text-slate-900"
+                        className="w-full min-h-[42px] rounded-xl border border-slate-300 bg-white px-2.5 py-2 text-xs text-slate-900"
                       >
                         <option value="">Sem assistência</option>
                         {confirmedPlayers
@@ -648,13 +1119,13 @@ export function EncountersView({
                           value={minuto}
                           onChange={(e) => setMinuto(e.target.value)}
                           placeholder="12"
-                          className="w-full min-h-[40px] rounded-lg border border-slate-300 bg-white px-2 py-2 text-xs tabular-nums"
+                          className="w-full min-h-[42px] rounded-xl border border-slate-300 bg-white px-2 py-2 text-xs tabular-nums"
                         />
                       </div>
                       <button
                         type="submit"
                         disabled={savingGoal}
-                        className="flex-1 min-h-[40px] rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50 whitespace-nowrap"
+                        className="flex-1 min-h-[42px] rounded-xl bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50 whitespace-nowrap"
                       >
                         + Gol
                       </button>
@@ -686,11 +1157,11 @@ export function EncountersView({
                             {g.minuto ? ` · ${g.minuto}'` : ''}
                           </div>
                         </div>
-                        {isAdmin && (
+                        {canEditMatchData && (
                           <button
                             type="button"
                             onClick={() => handleDeleteGoal(g.id)}
-                            className="min-h-[36px] min-w-[36px] inline-flex items-center justify-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600"
+                            className="min-h-[38px] min-w-[38px] inline-flex items-center justify-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600"
                             title="Remover gol"
                           >
                             <Trash2 className="h-4 w-4" />

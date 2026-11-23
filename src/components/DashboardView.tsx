@@ -53,7 +53,7 @@ export function DashboardView({
     );
   }
 
-  const { kpis, topScorers, topRated, attendanceRanking, monthlyRevenue, leagueAverages } =
+  const { kpis, topScorers, topWinners, topRated, attendanceRanking, monthlyRevenue, leagueAverages } =
     dashboard;
 
   const selectedPlayer =
@@ -201,7 +201,7 @@ export function DashboardView({
 
         <div className="rounded-2xl border border-slate-200 bg-white p-5">
           <div className="flex items-center justify-between text-xs font-medium text-slate-500">
-            <span>Encontros Realizados</span>
+            <span>Encontros & Partidas</span>
             <Trophy className="h-4 w-4 text-amber-600" />
           </div>
           <p className="mt-2 font-display text-3xl font-bold text-slate-900 tabular-nums">
@@ -209,7 +209,7 @@ export function DashboardView({
             <span className="text-base font-normal text-slate-400">/{kpis.totalEncontros}</span>
           </p>
           <p className="mt-1 text-xs text-slate-500 tabular-nums">
-            Taxa média de presença: {kpis.taxaPresencaMedia}%
+            {kpis.totalPartidas} partida(s) · Presença {kpis.taxaPresencaMedia}%
           </p>
         </div>
 
@@ -339,7 +339,9 @@ export function DashboardView({
                         {idx + 1}. {player.displayName}
                       </p>
                       <p className="text-[11px] text-slate-500">
-                        {player.stats.hasPeerVotes
+                        {player.stats.isAdminAdjusted
+                          ? 'Ajustada pelo Admin'
+                          : player.stats.hasPeerVotes
                           ? `Últimos ${player.stats.evaluatedEncountersCount} encontro(s) · ${player.stats.voteCount} votos`
                           : 'Autoavaliação inicial'}
                       </p>
@@ -439,34 +441,73 @@ export function DashboardView({
           </div>
         </section>
 
-        <section className="lg:col-span-5 rounded-2xl border border-slate-200 bg-white p-6">
-          <div className="mb-4">
-            <h3 className="font-display text-lg font-bold text-slate-900">Assiduidade na Quadra</h3>
-            <p className="text-xs text-slate-500">Jogadores com mais presenças confirmadas</p>
-          </div>
-          <div className="space-y-3">
-            {attendanceRanking.slice(0, 6).map((row) => {
-              const pct =
-                row.totalEncontros > 0
-                  ? Math.round((row.presencas / row.totalEncontros) * 100)
-                  : 0;
-              return (
-                <div key={row.userId} className="space-y-1">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-medium text-slate-800">{row.displayName}</span>
-                    <span className="font-mono text-slate-600 tabular-nums">
-                      {row.presencas}/{row.totalEncontros} ({pct}%)
+        <section className="lg:col-span-5 rounded-2xl border border-slate-200 bg-white p-6 space-y-6">
+          <div>
+            <div className="mb-3 flex items-center justify-between">
+              <div>
+                <h3 className="font-display text-lg font-bold text-slate-900">
+                  Vitórias em Partidas
+                </h3>
+                <p className="text-xs text-slate-500">Peladeiros com mais jogos vencidos</p>
+              </div>
+              <Trophy className="h-4 w-4 text-amber-600" />
+            </div>
+
+            {topWinners.length === 0 ? (
+              <p className="rounded-xl bg-slate-50 px-3.5 py-4 text-xs text-slate-500 text-center">
+                Finalize partidas na aba Peladas para contabilizar as vitórias dos times e jogadores.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {topWinners.slice(0, 5).map((w, idx) => (
+                  <div
+                    key={w.userId}
+                    className="flex items-center justify-between rounded-xl bg-slate-50/80 px-3 py-2 text-xs"
+                  >
+                    <span className="font-medium text-slate-800 truncate">
+                      <span className="font-mono text-slate-400 mr-1.5">
+                        {String(idx + 1).padStart(2, '0')}
+                      </span>
+                      {w.displayName}
+                    </span>
+                    <span className="font-mono font-bold text-emerald-700 tabular-nums shrink-0">
+                      {w.vitorias}V / {w.partidas}J
                     </span>
                   </div>
-                  <div className="h-2 w-full rounded-full bg-slate-100 overflow-hidden">
-                    <div
-                      className="h-full rounded-full bg-emerald-600 transition-all"
-                      style={{ width: `${pct}%` }}
-                    />
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="border-t border-slate-100 pt-5">
+            <div className="mb-4">
+              <h3 className="font-display text-lg font-bold text-slate-900">Assiduidade na Quadra</h3>
+              <p className="text-xs text-slate-500">Jogadores com mais presenças confirmadas</p>
+            </div>
+            <div className="space-y-3">
+              {attendanceRanking.slice(0, 6).map((row) => {
+                const pct =
+                  row.totalEncontros > 0
+                    ? Math.round((row.presencas / row.totalEncontros) * 100)
+                    : 0;
+                return (
+                  <div key={row.userId} className="space-y-1">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-medium text-slate-800">{row.displayName}</span>
+                      <span className="font-mono text-slate-600 tabular-nums">
+                        {row.presencas}/{row.totalEncontros} ({pct}%)
+                      </span>
+                    </div>
+                    <div className="h-2 w-full rounded-full bg-slate-100 overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-emerald-600 transition-all"
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
                   </div>
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
           </div>
         </section>
       </div>

@@ -139,6 +139,15 @@ export const api = {
       body: JSON.stringify({ role }),
     }),
 
+  adminUpdateRatings: (
+    userId: number,
+    payload: ({ mode: 'manual' } & PlayerCriteria) | { mode: 'automatico' }
+  ) =>
+    apiRequest<{ player: UserProfile }>(`/api/admin/players/${userId}/ratings`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+
   adminDeletePlayer: (userId: number) =>
     apiRequest<{ deleted: boolean }>(`/api/admin/players/${userId}`, {
       method: 'DELETE',
@@ -195,9 +204,53 @@ export const api = {
       body: JSON.stringify({ userId, targetTeamId }),
     }),
 
+  createMatch: (
+    encounterId: number,
+    payload: {
+      teamAId: number;
+      teamBId: number;
+      goalsA?: number;
+      goalsB?: number;
+      status?: 'em_andamento' | 'finalizado';
+    }
+  ) =>
+    apiRequest<{ encounter: EncounterSummary }>(`/api/encounters/${encounterId}/matches`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  updateMatch: (
+    encounterId: number,
+    matchId: number,
+    payload: {
+      goalsA?: number;
+      goalsB?: number;
+      status?: 'em_andamento' | 'finalizado';
+    }
+  ) =>
+    apiRequest<{ encounter: EncounterSummary }>(
+      `/api/encounters/${encounterId}/matches/${matchId}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      }
+    ),
+
+  deleteMatch: (encounterId: number, matchId: number) =>
+    apiRequest<{ encounter: EncounterSummary }>(
+      `/api/encounters/${encounterId}/matches/${matchId}`,
+      { method: 'DELETE' }
+    ),
+
   addGoal: (
     encounterId: number,
-    payload: { scorerId: number; assistId?: number | null; teamId?: number | null; minuto?: number | null }
+    payload: {
+      scorerId: number;
+      assistId?: number | null;
+      teamId?: number | null;
+      matchId?: number | null;
+      minuto?: number | null;
+    }
   ) =>
     apiRequest<{ encounter: EncounterSummary }>(`/api/encounters/${encounterId}/goals`, {
       method: 'POST',
