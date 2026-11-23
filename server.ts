@@ -5,6 +5,7 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { createServer as createViteServer } from 'vite';
 import {
   db,
+  ensureDefaultAdmin,
   getAllPlayerProfiles,
   getDashboardData,
   getEncounterSummaries,
@@ -13,73 +14,24 @@ import {
   getSettings,
   getUserNotifications,
   getUserProfileById,
-  hashPassword,
-  isAdminConfigured,
-  safeCompareStrings,
   updateSettings,
-  verifyPassword,
 } from './src/db/database.ts';
 import type { AttendanceStatus, EncounterStatus, UserProfile, UserRole } from './src/types.ts';
 
 const PORT = 3000;
-const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 
 interface AuthenticatedRequest extends Request {
   authUser?: UserProfile;
 }
 
-function signToken(userId: number): string {
-  const payload = Buffer.from(
-    JSON.stringify({ uid: userId, exp: Date.now() + 1000 * 60 * 60 * 24 * 7 })
-  ).toString('base64url');
-  const sig = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('base64url');
-  return `${payload}.${sig}`;
-}
-
-function verifyToken(token: string): { uid: number } | null {
-  const parts = token.split('.');
-  if (parts.length !== 2) return null;
-  const [payload, sig] = parts;
-  const expectedSig = crypto
-    .createHmac('sha256', SESSION_SECRET)
-    .update(payload)
-    .digest('base64url');
-  const sigBuf = Buffer.from(sig);
-  const expBuf = Buffer.from(expectedSig);
-  if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as {
-      uid: number;
-      exp: number;
-    };
-    if (typeof parsed.uid !== 'number' || typeof parsed.exp !== 'number') return null;
-    if (parsed.exp < Date.now()) return null;
-    return { uid: parsed.uid };
-  } catch {
-    return null;
-  }
-}
-
-function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    res.status(401).json({ error: 'Sessão não autenticada. Faça login para continuar.' });
-    return;
-  }
-  const token = authHeader.slice(7).trim();
-  const decoded = verifyToken(token);
-  if (!decoded) {
-    res.status(401).json({ error: 'Sessão expirada ou inválida. Entre novamente.' });
-    return;
-  }
-  const user = getUserProfileById(decoded.uid);
+function requireAuth(req: AuthenticatedRequest, _res: Response, next: NextFunction) {
+  const headerId = Number(req.headers['x-player-id']);
+  let user = Number.isInteger(headerId) && headerId > 0 ? getUserProfileById(headerId) : null;
   if (!user) {
-    res.status(401).json({ error: 'Conta não encontrada.' });
-    return;
+    const adminId = ensureDefaultAdmin();
+    user = getUserProfileById(adminId);
   }
-  req.authUser = user;
+  req.authUser = user!;
   next();
 }
 
@@ -119,134 +71,19 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
 
-  // Auth status
   app.get('/api/auth/status', (_req, res) => {
     const settings = getSettings();
     res.json({
-      adminConfigured: isAdminConfigured(),
-      adminUsername: 'didi',
+      noLoginRequired: true,
       peladaNome: settings.peladaNome,
     });
   });
 
-  // First-run admin setup/claim (only works when no admin exists and ADMIN_PASSWORD env is unset)
-  app.post('/api/auth/claim-admin', (req, res) => {
-    const envAdminPass = process.env.ADMIN_PASSWORD?.trim();
-    if (envAdminPass) {
-      res.status(409).json({
-        error: 'A senha do administrador já está configurada no ambiente do servidor.',
-      });
-      return;
-    }
-
-    const { password, displayName } = req.body ?? {};
-    if (typeof password !== 'string' || password.trim().length < 4) {
-      res.status(400).json({ error: 'Informe uma senha com pelo menos 4 caracteres.' });
-      return;
-    }
-
-    try {
-      const createdId = db.transaction(() => {
-        const existingAdmins = db
-          .prepare("SELECT COUNT(*) as cnt FROM users WHERE role = 'administrador'")
-          .get() as { cnt: number };
-        if (existingAdmins.cnt > 0) {
-          throw new Error('ALREADY_CLAIMED');
-        }
-        const existingDidi = getRawUserByUsername('didi');
-        const hash = hashPassword(password);
-        const name =
-          typeof displayName === 'string' && displayName.trim().length > 0
-            ? displayName.trim().slice(0, 40)
-            : 'Didi';
-        if (existingDidi) {
-          db.prepare(
-            "UPDATE users SET password_hash = ?, role = 'administrador', display_name = ? WHERE id = ?"
-          ).run(hash, name, existingDidi.id);
-          return existingDidi.id;
-        }
-        const result = db
-          .prepare(
-            `INSERT INTO users (username, display_name, password_hash, role, init_preparo, init_drible, init_chute, init_passe, init_defesa, init_ataque)
-             VALUES ('didi', ?, ?, 'administrador', 7, 7, 7, 7, 7, 7)`
-          )
-          .run(name, hash);
-        return Number(result.lastInsertRowid);
-      })();
-
-      const user = getUserProfileById(createdId);
-      const token = signToken(createdId);
-      res.status(201).json({ token, user });
-    } catch (err) {
-      if (err instanceof Error && err.message === 'ALREADY_CLAIMED') {
-        res.status(409).json({ error: 'Administrador já foi ativado anteriormente.' });
-        return;
-      }
-      res.status(500).json({ error: 'Erro ao ativar conta de administrador.' });
-    }
-  });
-
-  // Login
-  app.post('/api/auth/login', (req, res) => {
-    const { username, password } = req.body ?? {};
-    if (typeof username !== 'string' || typeof password !== 'string') {
-      res.status(400).json({ error: 'Informe usuário e senha.' });
-      return;
-    }
-
-    const cleanUsername = username.trim().toLowerCase();
-    if (!cleanUsername || !password) {
-      res.status(400).json({ error: 'Preencha nome de usuário e senha.' });
-      return;
-    }
-
-    const envAdminPass = process.env.ADMIN_PASSWORD?.trim();
-    if (cleanUsername === 'didi' && envAdminPass) {
-      if (!safeCompareStrings(password, envAdminPass)) {
-        res.status(401).json({ error: 'Usuário ou senha inválidos.' });
-        return;
-      }
-      let didi = getRawUserByUsername('didi');
-      if (!didi) {
-        const resInsert = db
-          .prepare(
-            `INSERT INTO users (username, display_name, password_hash, role, init_preparo, init_drible, init_chute, init_passe, init_defesa, init_ataque)
-             VALUES ('didi', 'Didi', ?, 'administrador', 7, 7, 7, 7, 7, 7)`
-          )
-          .run(hashPassword(envAdminPass));
-        didi = getRawUserByUsername('didi');
-        if (!didi && resInsert.lastInsertRowid) {
-          const user = getUserProfileById(Number(resInsert.lastInsertRowid));
-          res.json({ token: signToken(Number(resInsert.lastInsertRowid)), user });
-          return;
-        }
-      } else if (didi.role !== 'administrador') {
-        db.prepare("UPDATE users SET role = 'administrador' WHERE id = ?").run(didi.id);
-      }
-      if (didi) {
-        const user = getUserProfileById(didi.id);
-        res.json({ token: signToken(didi.id), user });
-        return;
-      }
-    }
-
-    const rawUser = getRawUserByUsername(cleanUsername);
-    if (!rawUser || !verifyPassword(password, rawUser.password_hash)) {
-      res.status(401).json({ error: 'Usuário ou senha inválidos.' });
-      return;
-    }
-
-    const user = getUserProfileById(rawUser.id);
-    const token = signToken(rawUser.id);
-    res.json({ token, user });
-  });
-
-  // Self-registration
+  // Quick self-registration (no login/password required)
   app.post('/api/auth/register', (req, res) => {
     const {
       username,
       displayName,
-      password,
       idade,
       peso,
       altura,
@@ -258,45 +95,50 @@ async function startServer() {
       ataque,
     } = req.body ?? {};
 
-    if (typeof username !== 'string' || typeof password !== 'string') {
-      res.status(400).json({ error: 'Nome de usuário e senha são obrigatórios.' });
-      return;
-    }
-
-    const cleanUser = username.trim().toLowerCase().replace(/[^a-z0-9_.-]/g, '');
-    if (cleanUser.length < 2 || cleanUser.length > 24) {
-      res.status(400).json({
-        error: 'O nome de usuário deve ter entre 2 e 24 caracteres (letras, números, _ ou .).',
-      });
-      return;
-    }
-    if (password.length < 4) {
-      res.status(400).json({ error: 'A senha deve ter pelo menos 4 caracteres.' });
-      return;
-    }
-    if (getRawUserByUsername(cleanUser)) {
-      res.status(409).json({ error: 'Este nome de usuário já está em uso.' });
-      return;
-    }
-
-    const cleanName =
+    const baseName =
       typeof displayName === 'string' && displayName.trim().length > 0
         ? displayName.trim().slice(0, 48)
-        : cleanUser;
+        : typeof username === 'string'
+        ? username.trim().slice(0, 48)
+        : '';
 
-    const hash = hashPassword(password);
+    if (!baseName) {
+      res.status(400).json({ error: 'Informe o nome ou apelido do jogador.' });
+      return;
+    }
+
+    const rawHandle =
+      typeof username === 'string' && username.trim().length >= 2
+        ? username.trim()
+        : baseName;
+
+    let cleanUser = rawHandle
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9_.-]/g, '');
+
+    if (cleanUser.length < 2) {
+      cleanUser = `peladeiro_${crypto.randomInt(100, 999)}`;
+    } else {
+      cleanUser = cleanUser.slice(0, 24);
+    }
+
+    if (getRawUserByUsername(cleanUser)) {
+      cleanUser = `${cleanUser.slice(0, 19)}_${crypto.randomInt(10, 99)}`;
+    }
+
     const result = db
       .prepare(
         `INSERT INTO users (
           username, display_name, password_hash, role,
           idade, peso, altura,
           init_preparo, init_drible, init_chute, init_passe, init_defesa, init_ataque
-        ) VALUES (?, ?, ?, 'peladeiro_avulso', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, '', 'peladeiro_avulso', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         cleanUser,
-        cleanName,
-        hash,
+        baseName,
         sanitizeOptionalNumber(idade, 10, 90),
         sanitizeOptionalNumber(peso, 35, 200),
         sanitizeOptionalNumber(altura, 120, 230),
@@ -310,7 +152,6 @@ async function startServer() {
 
     const newUserId = Number(result.lastInsertRowid);
 
-    // Add attendance + notification for currently open encounters
     const openEncounters = db
       .prepare("SELECT id, titulo, data_hora, local FROM encounters WHERE status = 'aberto'")
       .all() as Array<{ id: number; titulo: string; data_hora: string; local: string }>;
@@ -334,8 +175,7 @@ async function startServer() {
     }
 
     const user = getUserProfileById(newUserId);
-    const token = signToken(newUserId);
-    res.status(201).json({ token, user });
+    res.status(201).json({ user });
   });
 
   app.get('/api/auth/me', requireAuth, (req: AuthenticatedRequest, res) => {
@@ -347,7 +187,6 @@ async function startServer() {
     const userId = req.authUser!.id;
     const {
       displayName,
-      password,
       idade,
       peso,
       altura,
@@ -391,13 +230,6 @@ async function startServer() {
       userId
     );
 
-    if (typeof password === 'string' && password.trim().length >= 4) {
-      db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(
-        hashPassword(password.trim()),
-        userId
-      );
-    }
-
     res.json({ user: getUserProfileById(userId) });
   });
 
@@ -411,7 +243,6 @@ async function startServer() {
     const {
       username,
       displayName,
-      password,
       role,
       idade,
       peso,
@@ -424,30 +255,37 @@ async function startServer() {
       ataque,
     } = req.body ?? {};
 
-    if (typeof username !== 'string' || typeof password !== 'string') {
-      res.status(400).json({ error: 'Nome de usuário e senha são obrigatórios.' });
+    const cleanName =
+      typeof displayName === 'string' && displayName.trim().length > 0
+        ? displayName.trim().slice(0, 48)
+        : typeof username === 'string'
+        ? username.trim().slice(0, 48)
+        : '';
+
+    if (!cleanName) {
+      res.status(400).json({ error: 'Informe o nome do jogador.' });
       return;
     }
-    const cleanUser = username.trim().toLowerCase().replace(/[^a-z0-9_.-]/g, '');
-    if (cleanUser.length < 2 || cleanUser.length > 24) {
-      res.status(400).json({ error: 'Nome de usuário inválido (2 a 24 caracteres).' });
-      return;
-    }
-    if (password.length < 4) {
-      res.status(400).json({ error: 'A senha deve ter pelo menos 4 caracteres.' });
-      return;
+
+    const rawHandle =
+      typeof username === 'string' && username.trim().length >= 2 ? username.trim() : cleanName;
+
+    let cleanUser = rawHandle
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9_.-]/g, '')
+      .slice(0, 24);
+
+    if (cleanUser.length < 2) {
+      cleanUser = `jogador_${crypto.randomInt(100, 999)}`;
     }
     if (getRawUserByUsername(cleanUser)) {
-      res.status(409).json({ error: 'Nome de usuário já existe.' });
-      return;
+      cleanUser = `${cleanUser.slice(0, 19)}_${crypto.randomInt(10, 99)}`;
     }
 
     const validRoles: UserRole[] = ['administrador', 'peladeiro', 'peladeiro_avulso'];
     const targetRole: UserRole = validRoles.includes(role) ? role : 'peladeiro';
-    const cleanName =
-      typeof displayName === 'string' && displayName.trim().length > 0
-        ? displayName.trim().slice(0, 48)
-        : cleanUser;
 
     const result = db
       .prepare(
@@ -455,12 +293,11 @@ async function startServer() {
           username, display_name, password_hash, role,
           idade, peso, altura,
           init_preparo, init_drible, init_chute, init_passe, init_defesa, init_ataque
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         cleanUser,
         cleanName,
-        hashPassword(password),
         targetRole,
         sanitizeOptionalNumber(idade, 10, 90),
         sanitizeOptionalNumber(peso, 35, 200),

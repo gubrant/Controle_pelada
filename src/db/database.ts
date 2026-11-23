@@ -1,5 +1,4 @@
 import Database from 'better-sqlite3';
-import crypto from 'node:crypto';
 import path from 'node:path';
 import type {
   AttendanceRecord,
@@ -149,28 +148,6 @@ for (const [k, v] of Object.entries(defaultSettings)) {
   insertSettingStmt.run(k, v);
 }
 
-export function hashPassword(password: string): string {
-  const salt = crypto.randomBytes(16).toString('hex');
-  const derived = crypto.scryptSync(password, salt, 64).toString('hex');
-  return `${salt}:${derived}`;
-}
-
-export function verifyPassword(password: string, storedHash: string): boolean {
-  const parts = storedHash.split(':');
-  if (parts.length !== 2) return false;
-  const [salt, keyHex] = parts;
-  const keyBuffer = Buffer.from(keyHex, 'hex');
-  const derivedBuffer = crypto.scryptSync(password, salt, 64);
-  if (keyBuffer.length !== derivedBuffer.length) return false;
-  return crypto.timingSafeEqual(keyBuffer, derivedBuffer);
-}
-
-export function safeCompareStrings(a: string, b: string): boolean {
-  const hashA = crypto.createHash('sha256').update(a).digest();
-  const hashB = crypto.createHash('sha256').update(b).digest();
-  return crypto.timingSafeEqual(hashA, hashB);
-}
-
 export function getSettings(): PeladaSettings {
   const rows = db.prepare('SELECT key, value FROM settings').all() as Array<{
     key: string;
@@ -207,15 +184,30 @@ export function updateSettings(partial: Partial<PeladaSettings>): PeladaSettings
   return getSettings();
 }
 
-export function isAdminConfigured(): boolean {
-  if (process.env.ADMIN_PASSWORD && process.env.ADMIN_PASSWORD.trim().length > 0) {
-    return true;
+export function ensureDefaultAdmin(): number {
+  const existingAdmin = db
+    .prepare("SELECT id FROM users WHERE role = 'administrador' ORDER BY id ASC LIMIT 1")
+    .get() as { id: number } | undefined;
+  if (existingAdmin) {
+    return existingAdmin.id;
   }
-  const row = db
-    .prepare("SELECT COUNT(*) as cnt FROM users WHERE role = 'administrador'")
-    .get() as { cnt: number };
-  return row.cnt > 0;
+  const existingDidi = db
+    .prepare("SELECT id FROM users WHERE lower(username) = 'didi'")
+    .get() as { id: number } | undefined;
+  if (existingDidi) {
+    db.prepare("UPDATE users SET role = 'administrador' WHERE id = ?").run(existingDidi.id);
+    return existingDidi.id;
+  }
+  const result = db
+    .prepare(
+      `INSERT INTO users (username, display_name, password_hash, role, init_preparo, init_drible, init_chute, init_passe, init_defesa, init_ataque)
+       VALUES ('didi', 'Didi', '', 'administrador', 7, 7, 7, 7, 7, 7)`
+    )
+    .run();
+  return Number(result.lastInsertRowid);
 }
+
+ensureDefaultAdmin();
 
 interface RawUserRow {
   id: number;

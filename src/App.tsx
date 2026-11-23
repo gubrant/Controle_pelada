@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import {
   BarChart3,
   Bell,
   CalendarDays,
   ClipboardCheck,
-  LogOut,
+  UserPlus,
   Users,
   Wallet,
+  X,
 } from 'lucide-react';
 import type {
   AttendanceStatus,
@@ -14,10 +15,15 @@ import type {
   EncounterSummary,
   NotificationItem,
   PeladaSettings,
+  PlayerCriteria,
   UserProfile,
 } from './types.ts';
-import { ROLE_LABELS, api, setApiToken } from './lib/api.ts';
-import { AuthScreen } from './components/AuthScreen.tsx';
+import {
+  CRITERIA_LABELS,
+  ROLE_LABELS,
+  api,
+  setActivePlayerId,
+} from './lib/api.ts';
 import { DashboardView } from './components/DashboardView.tsx';
 import { EncountersView } from './components/EncountersView.tsx';
 import { VotingView } from './components/VotingView.tsx';
@@ -35,9 +41,17 @@ const NAV_ITEMS: Array<{ id: ActiveTab; label: string; icon: typeof BarChart3 }>
   { id: 'elenco', label: 'Elenco', icon: Users },
 ];
 
+const DEFAULT_CRITERIA: PlayerCriteria = {
+  preparo: 6,
+  drible: 6,
+  chute: 6,
+  passe: 6,
+  defesa: 6,
+  ataque: 6,
+};
+
 export default function App() {
   const [bootLoading, setBootLoading] = useState(true);
-  const [adminConfigured, setAdminConfigured] = useState(true);
   const [peladaNome, setPeladaNome] = useState('Pelada Quadra Livre');
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
   const [settings, setSettings] = useState<PeladaSettings>({
@@ -57,6 +71,15 @@ export default function App() {
   const [crestFailed, setCrestFailed] = useState(false);
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
 
+  // Quick self-registration modal (no login/password)
+  const [showRegisterModal, setShowRegisterModal] = useState(false);
+  const [regDisplayName, setRegDisplayName] = useState('');
+  const [regIdade, setRegIdade] = useState('');
+  const [regPeso, setRegPeso] = useState('');
+  const [regAltura, setRegAltura] = useState('');
+  const [regCriteria, setRegCriteria] = useState<PlayerCriteria>(DEFAULT_CRITERIA);
+  const [registering, setRegistering] = useState(false);
+
   const showToast = useCallback((msg: string, type: 'success' | 'error' = 'success') => {
     setToast({ msg, type });
   }, []);
@@ -66,17 +89,6 @@ export default function App() {
     const t = setTimeout(() => setToast(null), 4000);
     return () => clearTimeout(t);
   }, [toast]);
-
-  useEffect(() => {
-    api
-      .getAuthStatus()
-      .then((res) => {
-        setAdminConfigured(res.adminConfigured);
-        setPeladaNome(res.peladaNome);
-      })
-      .catch(() => {})
-      .finally(() => setBootLoading(false));
-  }, []);
 
   const loadWorkspaceData = useCallback(async () => {
     setDataLoading(true);
@@ -88,6 +100,7 @@ export default function App() {
         api.getPlayers(),
         api.getNotifications(),
       ]);
+      setActivePlayerId(meRes.user.id);
       setCurrentUser(meRes.user);
       setSettings(meRes.settings);
       setPeladaNome(meRes.settings.peladaNome);
@@ -102,24 +115,44 @@ export default function App() {
       );
     } finally {
       setDataLoading(false);
+      setBootLoading(false);
     }
   }, [showToast]);
 
-  const handleAuthenticated = async (token: string, user: UserProfile) => {
-    setApiToken(token);
-    setCurrentUser(user);
-    setAdminConfigured(true);
+  useEffect(() => {
+    loadWorkspaceData();
+  }, [loadWorkspaceData]);
+
+  const handleSwitchPlayer = async (playerId: number) => {
+    setActivePlayerId(playerId);
     await loadWorkspaceData();
   };
 
-  const handleLogout = () => {
-    setApiToken(null);
-    setCurrentUser(null);
-    setDashboard(null);
-    setEncounters([]);
-    setPlayers([]);
-    setNotifications([]);
-    setActiveTab('painel');
+  const handleQuickRegister = async (e: FormEvent) => {
+    e.preventDefault();
+    setRegistering(true);
+    try {
+      const res = await api.register({
+        displayName: regDisplayName,
+        idade: regIdade ? Number(regIdade) : null,
+        peso: regPeso ? Number(regPeso) : null,
+        altura: regAltura ? Number(regAltura) : null,
+        ...regCriteria,
+      });
+      setActivePlayerId(res.user.id);
+      setRegDisplayName('');
+      setRegIdade('');
+      setRegPeso('');
+      setRegAltura('');
+      setRegCriteria(DEFAULT_CRITERIA);
+      setShowRegisterModal(false);
+      await loadWorkspaceData();
+      showToast(`Bem-vindo à quadra, ${res.user.displayName}!`);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Erro ao cadastrar.', 'error');
+    } finally {
+      setRegistering(false);
+    }
   };
 
   const handleConfirmAttendance = async (encounterId: number, status: AttendanceStatus) => {
@@ -146,21 +179,11 @@ export default function App() {
     setNotifications((prev) => prev.map((n) => ({ ...n, lida: true })));
   };
 
-  if (bootLoading) {
+  if (bootLoading || !currentUser) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50 text-sm text-slate-600">
         Carregando sistema da pelada...
       </div>
-    );
-  }
-
-  if (!currentUser) {
-    return (
-      <AuthScreen
-        adminConfigured={adminConfigured}
-        peladaNome={peladaNome}
-        onAuthenticated={handleAuthenticated}
-      />
     );
   }
 
@@ -214,7 +237,11 @@ export default function App() {
                     : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                 }`}
               >
-                <Icon className={`h-4 w-4 shrink-0 ${isActive ? 'text-emerald-700' : 'text-slate-500'}`} />
+                <Icon
+                  className={`h-4 w-4 shrink-0 ${
+                    isActive ? 'text-emerald-700' : 'text-slate-500'
+                  }`}
+                />
                 <span>{item.label}</span>
               </button>
             );
@@ -222,22 +249,41 @@ export default function App() {
         </nav>
 
         <div className="border-t border-slate-200 p-4 space-y-3">
-          <div className="flex items-center justify-between gap-2">
-            <div className="min-w-0">
-              <p className="text-sm font-bold text-slate-900 truncate">{currentUser.displayName}</p>
-              <p className="text-xs text-slate-500 truncate">{ROLE_LABELS[currentUser.role]}</p>
-            </div>
-            <span className="font-mono text-xs font-bold text-emerald-700 tabular-nums shrink-0">
+          <div>
+            <label
+              htmlFor="sidebar-player-select"
+              className="block text-[11px] font-medium text-slate-500 mb-1"
+            >
+              Participante ativo
+            </label>
+            <select
+              id="sidebar-player-select"
+              value={currentUser.id}
+              onChange={(e) => handleSwitchPlayer(Number(e.target.value))}
+              className="w-full min-h-[38px] rounded-xl border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-900 focus:border-emerald-600 focus:outline-none"
+            >
+              {players.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.displayName} ({ROLE_LABELS[p.role]})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex items-center justify-between text-xs text-slate-500">
+            <span>Sua nota (OVR)</span>
+            <span className="font-mono font-bold text-emerald-700 tabular-nums">
               {currentUser.stats.overall.toFixed(1)}
             </span>
           </div>
+
           <button
             type="button"
-            onClick={handleLogout}
-            className="w-full min-h-[40px] inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 transition-colors"
+            onClick={() => setShowRegisterModal(true)}
+            className="w-full min-h-[40px] inline-flex items-center justify-center gap-2 rounded-xl border border-emerald-600/30 bg-emerald-50/70 px-3 py-2 text-xs font-semibold text-emerald-800 hover:bg-emerald-100 transition-colors"
           >
-            <LogOut className="h-3.5 w-3.5" />
-            <span>Sair da Conta</span>
+            <UserPlus className="h-3.5 w-3.5" />
+            <span>Novo Peladeiro</span>
           </button>
         </div>
       </aside>
@@ -245,7 +291,7 @@ export default function App() {
       {/* Main Content */}
       <div className="flex-1 flex flex-col min-w-0 lg:pl-64 pb-20 lg:pb-8">
         {/* Top Bar (3 zones) */}
-        <header className="sticky top-0 z-30 flex items-center justify-between gap-8 border-b border-slate-200 bg-white/95 px-4 sm:px-8 py-3.5 backdrop-blur-md">
+        <header className="sticky top-0 z-30 flex items-center justify-between gap-4 sm:gap-8 border-b border-slate-200 bg-white/95 px-4 sm:px-8 py-3.5 backdrop-blur-md">
           <div className="flex items-center gap-3 min-w-0">
             <span className="lg:hidden font-display text-sm font-bold text-emerald-700 whitespace-nowrap shrink-0">
               {peladaNome}
@@ -256,7 +302,29 @@ export default function App() {
             </h1>
           </div>
 
-          <div className="flex items-center gap-3 shrink-0">
+          <div className="flex items-center gap-2.5 shrink-0">
+            <select
+              aria-label="Selecionar participante ativo"
+              value={currentUser.id}
+              onChange={(e) => handleSwitchPlayer(Number(e.target.value))}
+              className="lg:hidden min-h-[40px] max-w-[140px] rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-800 truncate"
+            >
+              {players.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.displayName}
+                </option>
+              ))}
+            </select>
+
+            <button
+              type="button"
+              onClick={() => setShowRegisterModal(true)}
+              className="lg:hidden min-h-[40px] min-w-[40px] inline-flex items-center justify-center rounded-xl border border-slate-200 text-emerald-700 hover:bg-emerald-50"
+              title="Novo Peladeiro"
+            >
+              <UserPlus className="h-4 w-4" />
+            </button>
+
             <button
               type="button"
               onClick={() => setNotifOpen(true)}
@@ -270,15 +338,6 @@ export default function App() {
                   ({unreadNotifs})
                 </span>
               )}
-            </button>
-
-            <button
-              type="button"
-              onClick={handleLogout}
-              aria-label="Sair"
-              className="lg:hidden min-h-[40px] min-w-[40px] inline-flex items-center justify-center rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50"
-            >
-              <LogOut className="h-4 w-4" />
             </button>
           </div>
         </header>
@@ -363,6 +422,140 @@ export default function App() {
           );
         })}
       </nav>
+
+      {/* Modal Cadastro Rápido de Novo Peladeiro */}
+      {showRegisterModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-xs overflow-y-auto">
+          <div className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-6 shadow-xl my-8">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="font-display text-lg font-bold text-slate-900">
+                  Cadastrar Novo Peladeiro
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Acesso direto sem senha — informe seus dados físicos e autoavaliação.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowRegisterModal(false)}
+                className="min-h-[36px] min-w-[36px] inline-flex items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleQuickRegister} className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">
+                  Nome ou Apelido
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={regDisplayName}
+                  onChange={(e) => setRegDisplayName(e.target.value)}
+                  placeholder="ex: Lucas Silva"
+                  className="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm focus:border-emerald-600 focus:outline-none"
+                />
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Idade</label>
+                  <input
+                    type="number"
+                    min={10}
+                    max={90}
+                    value={regIdade}
+                    onChange={(e) => setRegIdade(e.target.value)}
+                    placeholder="28"
+                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm tabular-nums"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Peso (kg)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.5"
+                    min={35}
+                    max={200}
+                    value={regPeso}
+                    onChange={(e) => setRegPeso(e.target.value)}
+                    placeholder="76"
+                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm tabular-nums"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Altura (cm)
+                  </label>
+                  <input
+                    type="number"
+                    min={120}
+                    max={230}
+                    value={regAltura}
+                    onChange={(e) => setRegAltura(e.target.value)}
+                    placeholder="178"
+                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm tabular-nums"
+                  />
+                </div>
+              </div>
+
+              <div className="border-t border-slate-100 pt-3">
+                <p className="text-xs font-semibold text-slate-800 mb-2.5">
+                  Autoavaliação inicial (1 a 10)
+                </p>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-2.5">
+                  {CRITERIA_LABELS.map((c) => (
+                    <div key={c.key}>
+                      <div className="flex justify-between text-xs mb-0.5">
+                        <span className="text-slate-600">{c.short}</span>
+                        <span className="font-mono font-semibold text-emerald-700 tabular-nums">
+                          {regCriteria[c.key]}
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={1}
+                        max={10}
+                        step={0.5}
+                        value={regCriteria[c.key]}
+                        onChange={(e) =>
+                          setRegCriteria((prev) => ({
+                            ...prev,
+                            [c.key]: Number(e.target.value),
+                          }))
+                        }
+                        className="w-full accent-emerald-600 cursor-pointer"
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowRegisterModal(false)}
+                  className="min-h-[42px] rounded-xl border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={registering}
+                  className="min-h-[42px] rounded-xl bg-emerald-600 px-5 py-2 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  {registering ? 'Cadastrando...' : 'Confirmar Cadastro'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Notifications Drawer */}
       <NotificationsDrawer

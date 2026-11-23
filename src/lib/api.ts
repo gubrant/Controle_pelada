@@ -13,14 +13,14 @@ import type {
   AvulsoPaymentItem,
 } from '../types.ts';
 
-let authToken: string | null = null;
+let activePlayerId: number | null = null;
 
-export function setApiToken(token: string | null) {
-  authToken = token;
+export function setActivePlayerId(id: number | null) {
+  activePlayerId = id;
 }
 
-export function getApiToken(): string | null {
-  return authToken;
+export function getActivePlayerId(): number | null {
+  return activePlayerId;
 }
 
 async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -28,8 +28,8 @@ async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T
   if (!headers.has('Content-Type') && options.body) {
     headers.set('Content-Type', 'application/json');
   }
-  if (authToken) {
-    headers.set('Authorization', `Bearer ${authToken}`);
+  if (activePlayerId !== null) {
+    headers.set('X-Player-Id', String(activePlayerId));
   }
 
   const res = await fetch(path, { ...options, headers });
@@ -93,32 +93,14 @@ export function formatShortDate(iso: string): string {
 }
 
 export const api = {
-  getAuthStatus: () =>
-    apiRequest<{ adminConfigured: boolean; adminUsername: string; peladaNome: string }>(
-      '/api/auth/status'
-    ),
-
-  claimAdmin: (password: string, displayName?: string) =>
-    apiRequest<{ token: string; user: UserProfile }>('/api/auth/claim-admin', {
-      method: 'POST',
-      body: JSON.stringify({ password, displayName }),
-    }),
-
-  login: (username: string, password: string) =>
-    apiRequest<{ token: string; user: UserProfile }>('/api/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ username, password }),
-    }),
-
   register: (payload: {
-    username: string;
+    username?: string;
     displayName: string;
-    password: string;
     idade: number | null;
     peso: number | null;
     altura: number | null;
   } & PlayerCriteria) =>
-    apiRequest<{ token: string; user: UserProfile }>('/api/auth/register', {
+    apiRequest<{ user: UserProfile }>('/api/auth/register', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
@@ -127,7 +109,6 @@ export const api = {
 
   updateProfile: (payload: {
     displayName: string;
-    password?: string;
     idade: number | null;
     peso: number | null;
     altura: number | null;
@@ -140,9 +121,8 @@ export const api = {
   getPlayers: () => apiRequest<{ players: UserProfile[] }>('/api/players'),
 
   adminCreatePlayer: (payload: {
-    username: string;
+    username?: string;
     displayName: string;
-    password: string;
     role: UserRole;
     idade: number | null;
     peso: number | null;

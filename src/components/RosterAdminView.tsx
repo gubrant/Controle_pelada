@@ -38,7 +38,6 @@ export function RosterAdminView({
   const [showAddModal, setShowAddModal] = useState(false);
   const [newUsername, setNewUsername] = useState('');
   const [newDisplayName, setNewDisplayName] = useState('');
-  const [newPassword, setNewPassword] = useState('');
   const [newRole, setNewRole] = useState<UserRole>('peladeiro');
   const [newIdade, setNewIdade] = useState('');
   const [newPeso, setNewPeso] = useState('');
@@ -49,7 +48,6 @@ export function RosterAdminView({
   // Edit own profile modal
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [profName, setProfName] = useState(currentUser.displayName);
-  const [profPass, setProfPass] = useState('');
   const [profIdade, setProfIdade] = useState(
     currentUser.idade !== null ? String(currentUser.idade) : ''
   );
@@ -98,9 +96,8 @@ export function RosterAdminView({
     setCreating(true);
     try {
       await api.adminCreatePlayer({
-        username: newUsername,
+        username: newUsername || undefined,
         displayName: newDisplayName,
-        password: newPassword,
         role: newRole,
         idade: newIdade ? Number(newIdade) : null,
         peso: newPeso ? Number(newPeso) : null,
@@ -109,14 +106,13 @@ export function RosterAdminView({
       });
       setNewUsername('');
       setNewDisplayName('');
-      setNewPassword('');
       setNewIdade('');
       setNewPeso('');
       setNewAltura('');
       setNewCriteria(DEFAULT_CRITERIA);
       setShowAddModal(false);
       await onRefresh();
-      onToast('Nova conta criada com sucesso!');
+      onToast('Novo participante adicionado com sucesso!');
     } catch (err) {
       onToast(err instanceof Error ? err.message : 'Erro ao criar conta.', 'error');
     } finally {
@@ -130,14 +126,12 @@ export function RosterAdminView({
     try {
       const res = await api.updateProfile({
         displayName: profName,
-        password: profPass.trim() ? profPass.trim() : undefined,
         idade: profIdade ? Number(profIdade) : null,
         peso: profPeso ? Number(profPeso) : null,
         altura: profAltura ? Number(profAltura) : null,
         ...profCriteria,
       });
       onUpdateCurrentUser(res.user);
-      setProfPass('');
       setShowProfileModal(false);
       await onRefresh();
       onToast('Seu perfil foi atualizado!');
@@ -154,7 +148,6 @@ export function RosterAdminView({
     setProfPeso(currentUser.peso !== null ? String(currentUser.peso) : '');
     setProfAltura(currentUser.altura !== null ? String(currentUser.altura) : '');
     setProfCriteria(currentUser.initialCriteria);
-    setProfPass('');
     setShowProfileModal(true);
   };
 
@@ -417,19 +410,6 @@ export function RosterAdminView({
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Usuário (login)
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={newUsername}
-                    onChange={(e) => setNewUsername(e.target.value)}
-                    placeholder="ex: marcos"
-                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1">
                     Nome / Apelido
                   </label>
                   <input
@@ -441,37 +421,33 @@ export function RosterAdminView({
                     className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
                   />
                 </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Senha inicial
+                    Identificador (opcional)
                   </label>
                   <input
-                    type="password"
-                    required
-                    minLength={4}
-                    value={newPassword}
-                    onChange={(e) => setNewPassword(e.target.value)}
-                    placeholder="Mínimo 4 dígitos"
+                    type="text"
+                    value={newUsername}
+                    onChange={(e) => setNewUsername(e.target.value)}
+                    placeholder="ex: marcos10"
                     className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
                   />
                 </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Perfil / Categoria
-                  </label>
-                  <select
-                    value={newRole}
-                    onChange={(e) => setNewRole(e.target.value as UserRole)}
-                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium"
-                  >
-                    <option value="peladeiro">Peladeiro Fixo</option>
-                    <option value="peladeiro_avulso">Peladeiro Avulso</option>
-                    <option value="administrador">Administrador</option>
-                  </select>
-                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">
+                  Perfil / Categoria
+                </label>
+                <select
+                  value={newRole}
+                  onChange={(e) => setNewRole(e.target.value as UserRole)}
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium"
+                >
+                  <option value="peladeiro">Peladeiro Fixo</option>
+                  <option value="peladeiro_avulso">Peladeiro Avulso</option>
+                  <option value="administrador">Administrador</option>
+                </select>
               </div>
 
               <div className="grid grid-cols-3 gap-3">
@@ -575,32 +551,17 @@ export function RosterAdminView({
             </div>
 
             <form onSubmit={handleSaveOwnProfile} className="space-y-4">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Nome / Apelido
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={profName}
-                    onChange={(e) => setProfName(e.target.value)}
-                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Nova senha (opcional)
-                  </label>
-                  <input
-                    type="password"
-                    minLength={4}
-                    value={profPass}
-                    onChange={(e) => setProfPass(e.target.value)}
-                    placeholder="Manter atual"
-                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
-                  />
-                </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">
+                  Nome / Apelido
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={profName}
+                  onChange={(e) => setProfName(e.target.value)}
+                  className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                />
               </div>
 
               <div className="grid grid-cols-3 gap-3">
