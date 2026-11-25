@@ -1,4 +1,6 @@
 import Database from 'better-sqlite3';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import type {
   AttendanceRecord,
@@ -18,10 +20,34 @@ import type {
   UserRole,
 } from '../types.ts';
 
-const dbPath = path.resolve(process.cwd(), 'pelada.db');
+function resolveDbPath(): string {
+  if (process.env.DB_PATH) {
+    return path.resolve(process.env.DB_PATH);
+  }
+  const cwdPath = path.resolve(process.cwd(), 'pelada.db');
+  if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
+    return path.join(os.tmpdir(), 'pelada.db');
+  }
+  try {
+    fs.accessSync(process.cwd(), fs.constants.W_OK);
+    return cwdPath;
+  } catch {
+    return path.join(os.tmpdir(), 'pelada.db');
+  }
+}
+
+const dbPath = resolveDbPath();
 export const db = new Database(dbPath);
 
-db.pragma('journal_mode = WAL');
+try {
+  db.pragma('journal_mode = WAL');
+} catch {
+  try {
+    db.pragma('journal_mode = DELETE');
+  } catch {
+    // Ignore if filesystem does not support journal mode changes
+  }
+}
 db.pragma('foreign_keys = ON');
 
 db.exec(`

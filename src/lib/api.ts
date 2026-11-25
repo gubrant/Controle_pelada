@@ -13,10 +13,37 @@ import type {
   AvulsoPaymentItem,
 } from '../types.ts';
 
-let activePlayerId: number | null = null;
+import { handleLocalFallback } from './localFallback.ts';
+
+const ACTIVE_PLAYER_KEY = 'quadra_livre_active_player_id';
+
+function readStoredPlayerId(): number | null {
+  if (typeof window === 'undefined' || !window.localStorage) return null;
+  try {
+    const raw = window.localStorage.getItem(ACTIVE_PLAYER_KEY);
+    const num = raw ? Number(raw) : NaN;
+    return Number.isInteger(num) && num > 0 ? num : null;
+  } catch {
+    return null;
+  }
+}
+
+let activePlayerId: number | null = readStoredPlayerId();
+let useLocalFallback = false;
 
 export function setActivePlayerId(id: number | null) {
   activePlayerId = id;
+  if (typeof window !== 'undefined' && window.localStorage) {
+    try {
+      if (id !== null) {
+        window.localStorage.setItem(ACTIVE_PLAYER_KEY, String(id));
+      } else {
+        window.localStorage.removeItem(ACTIVE_PLAYER_KEY);
+      }
+    } catch {
+      // Ignore storage errors
+    }
+  }
 }
 
 export function getActivePlayerId(): number | null {
@@ -24,6 +51,10 @@ export function getActivePlayerId(): number | null {
 }
 
 async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
+  if (useLocalFallback) {
+    return handleLocalFallback<T>(path, options, activePlayerId);
+  }
+
   const headers = new Headers(options.headers);
   if (!headers.has('Content-Type') && options.body) {
     headers.set('Content-Type', 'application/json');
@@ -32,11 +63,53 @@ async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T
     headers.set('X-Player-Id', String(activePlayerId));
   }
 
-  const res = await fetch(path, { ...options, headers });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(data.error || `Erro na requisição (${res.status})`);
+  let res: Response;
+  try {
+    res = await fetch(path, { ...options, headers });
+  } catch {
+    useLocalFallback = true;
+    return handleLocalFallback<T>(path, options, activePlayerId);
   }
+
+  if (res.headers.get('x-storage-ephemeral') === '1') {
+    useLocalFallback = true;
+    return handleLocalFallback<T>(path, options, activePlayerId);
+  }
+
+  const contentType = res.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    useLocalFallback = true;
+    return handleLocalFallback<T>(path, options, activePlayerId);
+  }
+
+  const data = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+  if (!data) {
+    useLocalFallback = true;
+    return handleLocalFallback<T>(path, options, activePlayerId);
+  }
+
+  if (
+    res.status >= 500 ||
+    (res.status === 404 &&
+      (path === '/api/auth/me' ||
+        data.error === 'Endpoint da API não encontrado.' ||
+        typeof data.error !== 'string'))
+  ) {
+    useLocalFallback = true;
+    return handleLocalFallback<T>(path, options, activePlayerId);
+  }
+
+  if (data.ephemeral === true && path === '/api/auth/me') {
+    useLocalFallback = true;
+    return handleLocalFallback<T>(path, options, activePlayerId);
+  }
+
+  if (!res.ok) {
+    const errMsg =
+      typeof data.error === 'string' ? data.error : `Erro na requisição (${res.status})`;
+    throw new Error(errMsg);
+  }
+
   return data as T;
 }
 

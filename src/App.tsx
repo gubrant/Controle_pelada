@@ -54,6 +54,7 @@ const DEFAULT_CRITERIA: PlayerCriteria = {
 
 export default function App() {
   const [bootLoading, setBootLoading] = useState(true);
+  const [bootError, setBootError] = useState<string | null>(null);
   const [peladaNome, setPeladaNome] = useState('Pelada Quadra Livre');
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
   const [settings, setSettings] = useState<PeladaSettings>({
@@ -94,15 +95,16 @@ export default function App() {
 
   const loadWorkspaceData = useCallback(async () => {
     setDataLoading(true);
+    setBootError(null);
     try {
-      const [meRes, dashRes, encRes, playersRes, notifRes] = await Promise.all([
-        api.getMe(),
+      const meRes = await api.getMe();
+      setActivePlayerId(meRes.user.id);
+      const [dashRes, encRes, playersRes, notifRes] = await Promise.all([
         api.getDashboard(),
         api.getEncounters(),
         api.getPlayers(),
         api.getNotifications(),
       ]);
-      setActivePlayerId(meRes.user.id);
       setCurrentUser(meRes.user);
       setSettings(meRes.settings);
       setPeladaNome(meRes.settings.peladaNome);
@@ -111,10 +113,10 @@ export default function App() {
       setPlayers(playersRes.players);
       setNotifications(notifRes.notifications);
     } catch (err) {
-      showToast(
-        err instanceof Error ? err.message : 'Erro ao carregar dados da pelada.',
-        'error'
-      );
+      const msg =
+        err instanceof Error ? err.message : 'Erro ao carregar dados da pelada.';
+      setBootError(msg);
+      showToast(msg, 'error');
     } finally {
       setDataLoading(false);
       setBootLoading(false);
@@ -181,10 +183,35 @@ export default function App() {
     setNotifications((prev) => prev.map((n) => ({ ...n, lida: true })));
   };
 
-  if (bootLoading || !currentUser) {
+  if (bootLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50 text-sm text-slate-600">
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 text-sm text-slate-600 px-4">
         Carregando sistema da pelada...
+      </div>
+    );
+  }
+
+  if (!currentUser) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 px-4">
+        <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-sm text-center space-y-4">
+          <h2 className="font-display text-lg font-bold text-slate-900">
+            Não foi possível carregar a pelada
+          </h2>
+          <p className="text-sm text-slate-600">
+            {bootError || 'Verifique sua conexão e tente novamente.'}
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              setBootLoading(true);
+              loadWorkspaceData();
+            }}
+            className="min-h-[44px] w-full rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700 transition-colors"
+          >
+            Tentar Novamente
+          </button>
+        </div>
       </div>
     );
   }
